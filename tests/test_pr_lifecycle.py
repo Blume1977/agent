@@ -1524,7 +1524,7 @@ def test_non_allowlisted_hold_does_not_block_ready():
     assert result.lifecycle["action"] == "ready"
     assert fake.transitions == [False]
     assert not any("live-e2e.yml" in str(reason) for reason in result.lifecycle["reasons"])
-    assert fake.cancels == [202]
+    assert fake.cancels == []
 
 
 def test_non_allowlisted_cancelled_hold_does_not_block_ready():
@@ -1545,7 +1545,7 @@ def test_non_allowlisted_cancelled_hold_does_not_block_ready():
     assert result.lifecycle["action"] == "ready"
     assert fake.transitions == [False]
     assert not any("live-e2e.yml" in str(reason) for reason in result.lifecycle["reasons"])
-    assert fake.cancels == [202]
+    assert fake.cancels == []
 
 
 def test_non_allowlisted_failure_still_blocks_ready():

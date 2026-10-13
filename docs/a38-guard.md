@@ -107,7 +107,7 @@ This is the intended sequence. Ready for review is **not** a CI switch. Labels s
 3. The author measures A38 on the current head and posts the report.
 4. The **trusted** guard (pinned action, no PR checkout) validates that report.
 5. The local report gate (an accepted report or an existing waiver) on an open enforce pull request may **approve** those waiting **initial** runs, and only for workflow paths listed in the trusted `.github/pr-guard.json`. A missing review record does not approve Ready and does not block this approval.
-6. Superseded or non-allowlisted `action_required` runs on this head are **cancelled** so GitHub does not keep the yellow “workflows awaiting approval” banner. That is not stopping a running test.
+6. The guard approves every initial held allowlisted run on the current head, including an older copy when no newer run of that workflow is queued or in progress, because cancel does not change `action_required`. A path that is not listed is not approved and is not cancelled; the repository adds that exact path to `workflow_approval.workflows` when that workflow should be unlocked.
 7. Approval means GitHub may start those runs. It is not a green check. The jobs still have to finish.
 8. A human merges. The merger does **not** click **Approve and run workflows**.
 
@@ -130,15 +130,15 @@ A repository may opt in to bot-owned CI authorization in its trusted default-bra
 
 This is an optional top-level object alongside `schema` and `a38`. Omission disables the feature. Both fields are required when present; `enabled` is a boolean, and `workflows` is a duplicate-free list of at most 64 exact workflow YAML paths (nonempty when enabled). Globs and unknown fields fail closed. The proposed PR-head config cannot activate approval. Workflow selection and the token's `actions: write` permission belong to the adopting repository, not to a global runner policy.
 
-The bot approves only an **initial** `pull_request` run waiting in `completed` / `action_required`, with `run_attempt: 1`, for an allowlisted workflow on the exact current head, fork repository and branch. Approval follows the local report gate (accepted report or an existing waiver) on an open enforce pull request. A missing review record does not approve Ready and does not block this approval. Failed or incomplete local-report evidence, observe mode, excluded targets, closed PRs and same-repository PRs cannot trigger approval. Existing migration authorization remains required for policy/workflow/config changes.
+The bot approves every **initial** `pull_request` run waiting in `completed` / `action_required`, with `run_attempt: 1`, for an allowlisted workflow on the exact current head, fork repository and branch. That includes an older copy when no newer run of that workflow is `queued` or `in_progress`, because cancel does not change `action_required`. A queued or in-progress newer run of the same path leaves older held runs for the next reconcile; approving the older copy can cancel the newer one through `cancel-in-progress`. A path that is not listed is not approved and is not cancelled; the repository adds that exact path to `workflow_approval.workflows` when that workflow should be unlocked. Approval follows the local report gate (accepted report or an existing waiver) on an open enforce pull request. A missing review record does not approve Ready and does not block this approval. Failed or incomplete local-report evidence, observe mode, excluded targets, closed PRs and same-repository PRs cannot trigger approval. Existing migration authorization remains required for policy/workflow/config changes.
 
-For each workflow, the newest matching run across **all** states wins. A queued, successful, failed or rerun attempt supersedes an older blocked run. The fork workflow-approval path never calls a rerun, dispatch, merge, review-approval or environment-approval endpoint. It **cancels** superseded or non-allowlisted `action_required` runs on the current head so GitHub does not keep the pull request banner “workflows awaiting approval”. It never cancels an in-progress or queued test. Approval authorizes execution; it is not a test result or a Ready verdict. Ready uses a narrower rule. While workflow approval is enabled, a hold that is not required, not allowlisted, and never started a job does not block Ready and does not hide an older same-head result of that workflow. The newest remaining run is judged by the existing rule: success is green, and failure, timeout, cancellation after a job started, and a run that is still going are not. Required workflows, allowlisted workflows, and the same hold while approval is disabled still block.
+The fork workflow-approval path never calls a rerun, dispatch, merge, review-approval, environment-approval, `/cancel`, or `/force-cancel` endpoint. Approval authorizes execution; it is not a test result or a Ready verdict. Ready uses a narrower rule. While workflow approval is enabled, a hold that is not required, not allowlisted, and never started a job does not block Ready and does not hide an older same-head result of that workflow. The newest remaining run is judged by the existing rule: success is green, and failure, timeout, cancellation after a job started, and a run that is still going are not. Required workflows, allowlisted workflows, and the same hold while approval is disabled still block.
 
 The run's PR association must match the current PR/head/base. For private forks whose API association array is empty, the fork branch must identify exactly one open PR, and the run must not predate the PR or a later recorded target/lifecycle change. Ambiguous association, incomplete pagination, API errors or denied permissions fail closed. Head/base, trusted config, the qualifying author report and maintainer authorization are refreshed before every POST. GitHub provides no atomic compare-and-approve operation; these checks minimize, but cannot eliminate, a change racing the final API call.
 
-Enable `actions: write` in the trusted guard workflow (or equivalent Actions write access on a dedicated App token). The guard uses GitHub's [approve-workflow-run endpoint](https://docs.github.com/en/rest/actions/workflow-runs#approve-a-workflow-run-for-a-fork-pull-request), accepts only its documented `201` success, and never retries that POST. Insufficient permissions remain an explicit failure; changing the repository's fork protection setting is not a fallback. `--dry-run` previews candidates without any writes, including audit comments. Assessment JSON includes `workflow_approvals`; completed authorization also records `workflow:approve:<run-id>` and `workflow:cancel:<run-id>` in `writes`.
+Enable `actions: write` in the trusted guard workflow (or equivalent Actions write access on a dedicated App token). The guard uses GitHub's [approve-workflow-run endpoint](https://docs.github.com/en/rest/actions/workflow-runs#approve-a-workflow-run-for-a-fork-pull-request), accepts only its documented `201` success, and never retries that POST. Insufficient permissions remain an explicit failure; changing the repository's fork protection setting is not a fallback. `--dry-run` previews candidates without any writes, including audit comments. Assessment JSON includes `workflow_approvals`; completed authorization also records `workflow:approve:<run-id>` in `writes`.
 
-The first successful approve or cancel in a guard invocation POSTs a new visible EN/DE comment (`PR-GUARD:CI-AUTH:v1` / `PR-GUARD:CI-CANCEL:v1`). Further successful same-kind mutations in that same invocation PATCH that comment. A later invocation POSTs a new comment; it must not PATCH an older one (GitHub PATCH does not move the comment in the timeline). Ready/Draft still POST a new `PR-GUARD:LIFECYCLE:v1` comment per transition. HTTP 409 on cancel does not comment. Approve and cancel comments are posted even when lifecycle is disabled. Auto-ready uses the latest bot-owned AUTH record (highest comment id) on the current head/base when the guard authorized held runs. When no bot-owned AUTH row exists and required CI is already green (nothing was held), auto-ready still performs leave-draft (`isDraft=false`). A present but mismatched bot-owned AUTH row still blocks.
+The first successful approve in a guard invocation POSTs a new visible EN/DE comment (`PR-GUARD:CI-AUTH:v1`). Further successful approvals in that same invocation PATCH that comment. A later invocation POSTs a new comment; it must not PATCH an older one (GitHub PATCH does not move the comment in the timeline). Ready/Draft still POST a new `PR-GUARD:LIFECYCLE:v1` comment per transition. Approve comments are posted even when lifecycle is disabled. Auto-ready uses the latest bot-owned AUTH record (highest comment id) on the current head/base when the guard authorized held runs. When no bot-owned AUTH row exists and required CI is already green (nothing was held), auto-ready still performs leave-draft (`isDraft=false`). A present but mismatched bot-owned AUTH row still blocks.
 
 ### Result comment when authorized runs finish
 
@@ -310,22 +310,24 @@ conflict nor permits Ready. This feature changes readiness only; it creates no
 review approvals and never bypasses review requirements, branch protection or
 human merge.
 
-The first successful approve or cancel in a guard invocation POSTs a new visible
-EN/DE comment (`PR-GUARD:CI-AUTH:v1` / `PR-GUARD:CI-CANCEL:v1`). Further
-successful same-kind mutations in that same invocation PATCH that comment. A
-later invocation POSTs a new comment; it must not PATCH an older one (GitHub
-PATCH does not move the comment in the timeline). Ready/Draft still POST a new
-`PR-GUARD:LIFECYCLE:v1` comment per transition. Each Ready/Draft transition names
-the blockers that actually apply (never an "or" between CI and merge conflicts);
-the full reason list remains in collapsed details. A durable intent is written
-before the mutation and updated after success; the next scan repairs the comment
-if that update was interrupted. Unchanged readiness creates no duplicate comment.
-Convert-to-draft that GitHub accepts without GraphQL errors but leaves `isDraft`
-false is not API denial: the planned record is closed as applied Ready, readiness
-stays unchanged, and the EN/DE comment says the Draft conversion did not take
-effect. HTTP 409 on cancel does not comment. Approve and cancel comments are
-posted even when lifecycle is disabled. When those runs later finish, the guard posts `PR-GUARD:CI-RESULT:v1` as documented under "Result comment when authorized runs finish"; it does not patch the authorization comment. Auto-ready uses the latest bot-owned
-AUTH record (highest comment id) on the current head/base when that row exists.
+The first successful approve in a guard invocation POSTs a new visible
+EN/DE comment (`PR-GUARD:CI-AUTH:v1`). Further successful approvals in that
+same invocation PATCH that comment. A later invocation POSTs a new comment;
+it must not PATCH an older one (GitHub PATCH does not move the comment in the
+timeline). Ready/Draft still POST a new `PR-GUARD:LIFECYCLE:v1` comment per
+transition. Each Ready/Draft transition names the blockers that actually apply
+(never an "or" between CI and merge conflicts); the full reason list remains in
+collapsed details. A durable intent is written before the mutation and updated
+after success; the next scan repairs the comment if that update was interrupted.
+Unchanged readiness creates no duplicate comment. Convert-to-draft that GitHub
+accepts without GraphQL errors but leaves `isDraft` false is not API denial: the
+planned record is closed as applied Ready, readiness stays unchanged, and the
+EN/DE comment says the Draft conversion did not take effect. Approve comments
+are posted even when lifecycle is disabled. When those runs later finish, the
+guard posts `PR-GUARD:CI-RESULT:v1` as documented under "Result comment when
+authorized runs finish"; it does not patch the authorization comment. Auto-ready
+uses the latest bot-owned AUTH record (highest comment id) on the current
+head/base when that row exists.
 Only the authenticated bot's numeric user ID can supply these records. When no
 such row exists and required CI is green, auto-ready still performs
 leave-draft (`isDraft=false`). A present but mismatched bot-owned AUTH

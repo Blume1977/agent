@@ -98,29 +98,20 @@ def _pending(run: Mapping[str, Any]) -> bool:
             and type(run.get("run_attempt")) is int and run["run_attempt"] == 1)
 
 
-def _stale_held(
+def _has_newer_active(
     runs: list[Mapping[str, Any]],
     pull: Mapping[str, Any],
-    latest: dict[str, Mapping[str, Any]],
-) -> list[Mapping[str, Any]]:
-    """Held runs on this head that must not stay `action_required`.
-
-    GitHub's PR banner counts every such run, including superseded copies and
-    workflows that are not allowlisted. Cancel those so the banner clears.
-    Never cancel the latest allowlisted candidate (that one is approved).
-    """
-    keep = {run["id"] for run in latest.values() if _pending(run)}
-    stale: list[Mapping[str, Any]] = []
-    seen: set[int] = set()
-    for run in runs:
-        ident = run.get("id")
-        if type(ident) is not int or ident in seen or ident in keep:
-            continue
-        if not _on_this_pull(run, pull) or not _pending(run):
-            continue
-        seen.add(ident)
-        stale.append(run)
-    return stale
+    candidate: Mapping[str, Any],
+) -> bool:
+    path = candidate["path"]
+    stamp = (_timestamp(candidate.get("created_at")), candidate["id"])
+    return any(
+        _on_this_pull(run, pull)
+        and run.get("path") == path
+        and (_timestamp(run.get("created_at")), run["id"]) > stamp
+        and run.get("status") in {"queued", "in_progress"}
+        for run in runs
+    )
 
 
 def _belongs_to_pull(api: Any, run: Mapping[str, Any], pull: Mapping[str, Any]) -> None:
@@ -207,60 +198,19 @@ def approve_workflow_runs(api: Any, assessment: Any, *, dry_run: bool = False) -
 
     pull = fresh_pull()
     inventory = _runs(api, assessment.repo, assessment.head_sha)
-    candidates = _latest(inventory, pull, paths)
+    held = [
+        run for run in inventory
+        if _matches(run, pull, paths) and _pending(run)
+        and not _has_newer_active(inventory, pull, run)
+    ]
+    held.sort(key=lambda run: (_timestamp(run.get("created_at")), run["id"]))
     result = []
     auth_comment = None
-    cancel_comment = None
-    from .pr_lifecycle import record_workflow_approval, record_workflow_cancel
-    for stale in _stale_held(inventory, pull, candidates):
+    from .pr_lifecycle import record_workflow_approval
+    for candidate in held:
         pull = fresh_pull()
-        run = api.get_json(f"/repos/{assessment.repo}/actions/runs/{stale['id']}")
-        if not isinstance(run, Mapping) or run.get("id") != stale["id"] or not _on_this_pull(run, pull):
-            raise GuardError("workflow run identity changed before cancel")
-        if not _pending(run):
-            continue
-        _belongs_to_pull(api, run, pull)
-        final = fetch_pull(api, assessment.repo, assessment.pr)
-        config_now = resolve_trusted_guard_config(api, final)
-        comments = collect_comments(api, assessment.repo, assessment.pr)
-        if (final != snap or config_now.config_revision != trusted.config_revision
-                or config_now.fingerprint != trusted.fingerprint
-                or _report_fingerprint(reload_gate_report(api, final, comments)) != assessment.report_fingerprint
-                or migration_approval(api, final) != assessment.approval_fingerprint):
-            raise GuardError("pull or author evidence changed before workflow cancel")
-        run = api.get_json(f"/repos/{assessment.repo}/actions/runs/{stale['id']}")
-        if not isinstance(run, Mapping) or run.get("id") != stale["id"] or not _pending(run):
-            continue
-        if not dry_run:
-            status, _, _ = api.request(
-                "POST", f"/repos/{assessment.repo}/actions/runs/{run['id']}/cancel", retry=False
-            )
-            # 202 = cancelled; 409 = already gone from the hold queue.
-            if status not in {202, 409}:
-                raise GuardError(
-                    f"workflow cancel HTTP {status}; Actions write permission is required"
-                )
-            assessment.writes.append(f"workflow:cancel:{run['id']}")
-            if status == 202:
-                cancel_comment = record_workflow_cancel(
-                    api, assessment, run, create=cancel_comment is None, existing=cancel_comment
-                )
-        result.append(
-            {
-                "run_id": stale["id"],
-                "workflow": stale.get("path"),
-                "head": assessment.head_sha,
-                "status": "planned-cancel" if dry_run else "cancelled",
-            }
-        )
-    for path, candidate in sorted(candidates.items()):
-        if not _pending(candidate):
-            continue
-        pull = fresh_pull()
-        # Re-list all states: a newer queued/passed/failed run supersedes an old
-        # blocked run, so never wake that old run and repeat a completed suite.
-        latest = _latest(_runs(api, assessment.repo, assessment.head_sha), pull, paths).get(path)
-        if latest is None or latest["id"] != candidate["id"] or not _pending(latest):
+        current = _runs(api, assessment.repo, assessment.head_sha)
+        if _has_newer_active(current, pull, candidate):
             continue
         run = api.get_json(f"/repos/{assessment.repo}/actions/runs/{candidate['id']}")
         if not isinstance(run, Mapping) or run.get("id") != candidate["id"] or not _matches(run, pull, paths):
@@ -295,6 +245,6 @@ def approve_workflow_runs(api: Any, assessment: Any, *, dry_run: bool = False) -
             auth_comment = record_workflow_approval(
                 api, assessment, run, create=auth_comment is None, existing=auth_comment
             )
-        result.append({"run_id": run["id"], "workflow": path, "head": assessment.head_sha,
+        result.append({"run_id": run["id"], "workflow": run["path"], "head": assessment.head_sha,
                        "status": "planned" if dry_run else "approved"})
     return result
