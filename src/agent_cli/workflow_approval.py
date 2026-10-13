@@ -206,7 +206,7 @@ def approve_workflow_runs(api: Any, assessment: Any, *, dry_run: bool = False) -
     held.sort(key=lambda run: (_timestamp(run.get("created_at")), run["id"]))
     result = []
     auth_comment = None
-    from .pr_lifecycle import record_workflow_approval
+    from .pr_lifecycle import _recorded_authorization_run_id, record_workflow_approval
     for candidate in held:
         pull = fresh_pull()
         current = _runs(api, assessment.repo, assessment.head_sha)
@@ -238,12 +238,15 @@ def approve_workflow_runs(api: Any, assessment: Any, *, dry_run: bool = False) -
         if assessment.write_ready and not still_ready and not docs_waiver:
             raise GuardError("write-ready waiver changed before workflow approval")
         if not dry_run:
+            siblings = _runs(api, assessment.repo, assessment.head_sha, event=None)
+            recorded_id = _recorded_authorization_run_id(run, siblings, assessment.pr)
             status, _, _ = api.request("POST", f"/repos/{assessment.repo}/actions/runs/{run['id']}/approve", retry=False)
             if status != 201:
                 raise GuardError(f"workflow approval HTTP {status}; Actions write permission is required")
             assessment.writes.append(f"workflow:approve:{run['id']}")
             auth_comment = record_workflow_approval(
-                api, assessment, run, create=auth_comment is None, existing=auth_comment
+                api, assessment, run, create=auth_comment is None, existing=auth_comment,
+                recorded_run_id=recorded_id,
             )
         result.append({"run_id": run["id"], "workflow": run["path"], "head": assessment.head_sha,
                        "status": "planned" if dry_run else "approved"})

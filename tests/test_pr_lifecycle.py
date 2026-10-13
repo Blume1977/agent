@@ -520,6 +520,32 @@ def test_approval_then_pending_then_green_promotes_once_without_rerunning():
     assert fake.posts == [101] and fake.transitions == [True, False]
 
 
+def test_older_hold_records_newer_success_and_auto_readies_once():
+    fake = LifecycleAPI()
+    fake.pull["draft"] = True
+    fake.runs[0].update(conclusion="action_required", created_at="2026-09-05T11:00:00Z")
+    fake.runs.append(fake.run(
+        id=102,
+        created_at="2026-09-05T11:01:00Z",
+        status="completed",
+        conclusion="success",
+        check_suite_id=202,
+    ))
+    first = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [101]
+    assert first.lifecycle["action"] == "ready"
+    assert fake.transitions == [False]
+    auths = [c for c in fake.comments if c["body"].startswith(AUTH_MARKER)]
+    assert len(auths) == 1
+    runs = json.loads(auths[0]["body"].split("```json\n", 1)[1].split("\n```", 1)[0])["runs"]
+    assert any(row.get("run_id") == 102 for row in runs)
+    assert not any(row.get("run_id") == 101 for row in runs)
+    assert first.ci_results[0]["status"] == "posted"
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [101]
+    assert fake.transitions == [False]
+
+
 def test_multiple_auth_comments_use_latest_and_do_not_raise_ambiguous():
     fake = LifecycleAPI()
     fake.pull["draft"] = True

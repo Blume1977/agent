@@ -519,6 +519,9 @@ def test_both_held_allowlisted_same_path_are_approved_oldest_first() -> None:
     statuses = {item["run_id"]: item["status"] for item in result.workflow_approvals}
     assert statuses[100] == "approved"
     assert statuses[101] == "approved"
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 101, "workflow": PATH}]
 
 
 def test_non_allowlisted_held_run_on_this_head_is_not_approved_or_cancelled() -> None:
@@ -653,9 +656,11 @@ def test_pagination_exact_page_does_not_fetch_another_page() -> None:
     fake.inventory = inventory
     result = reconcile_pull(fake.api(), REPO, 1)
     assert fake.posts == [100]
-    # Approval refreshes the inventory, then the always-on manual-activation
-    # scan reads it again. Neither call may walk past page 1 when total_count is 100.
-    assert fake.actions_pages == [1, 1, 1]
+    # Approval reads the pull_request inventory, then reads the inventory without
+    # an event filter before POST for the stored run id, then the always-on
+    # manual-activation scan reads it again. None of these calls may request
+    # page 2 when total_count is 100.
+    assert fake.actions_pages == [1, 1, 1, 1]
     assert 2 not in fake.actions_pages
     assert any(item["run_id"] == 100 and item["status"] == "approved" for item in result.workflow_approvals)
     assert fake.cancels == []
@@ -1048,6 +1053,116 @@ def test_two_held_allowlisted_same_path_share_one_auth_comment() -> None:
     auths = _marker_comments(fake, AUTH_MARKER)
     assert len(auths) == 1
     assert not _marker_comments(fake, CANCEL_MARKER)
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 202, "workflow": PATH}]
+
+
+@pytest.mark.parametrize(
+    "conclusion",
+    [
+        "success",
+        "failure",
+        "skipped",
+        "cancelled",
+        "timed_out",
+        "neutral",
+        "startup_failure",
+        "stale",
+    ],
+)
+def test_auth_run_id_follows_newest_finished_run(conclusion: str) -> None:
+    fake = FakeApproval()
+    fake.runs.append(fake.run(id=102, created_at="2026-09-05T11:01:00Z", conclusion=conclusion))
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [101]
+    assert fake.cancels == []
+    assert any(item["run_id"] == 101 and item["status"] == "approved" for item in result.workflow_approvals)
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 102, "workflow": PATH}]
+    assert AUTH_EN in auths[0]["body"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"status": "waiting", "conclusion": None},
+        {"run_attempt": 2},
+    ],
+)
+def test_auth_run_id_stays_the_approved_run_when_newer_is_not_finished(changes: dict) -> None:
+    fake = FakeApproval()
+    fake.runs.append(fake.run(id=102, created_at="2026-09-05T11:01:00Z", **changes))
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [101]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 101, "workflow": PATH}]
+
+
+def test_auth_does_not_record_an_intermediate_success_when_newest_is_still_held() -> None:
+    fake = FakeApproval()
+    fake.runs = [
+        fake.run(id=101, created_at="2026-09-05T10:00:00Z"),
+        fake.run(id=102, created_at="2026-09-05T11:00:00Z", conclusion="success"),
+        fake.run(
+            id=103,
+            created_at="2026-09-05T12:00:00Z",
+            run_attempt=2,
+        ),
+    ]
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [101]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 101, "workflow": PATH}]
+
+
+def test_auth_records_newer_finished_run_even_when_its_event_is_not_pull_request() -> None:
+    fake = FakeApproval()
+    fake.runs.append(
+        fake.run(
+            id=102,
+            event="workflow_dispatch",
+            conclusion="success",
+            created_at="2026-09-05T11:01:00Z",
+        )
+    )
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [101]
+    assert [item["run_id"] for item in result.workflow_approvals] == [101]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 102, "workflow": PATH}]
+
+
+def test_auth_ignores_newer_finished_run_linked_to_another_pull() -> None:
+    fake = FakeApproval()
+    fake.runs.append(
+        fake.run(
+            id=102,
+            conclusion="success",
+            created_at="2026-09-05T11:01:00Z",
+            pull_requests=[{"number": 99}],
+        )
+    )
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [101]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 101, "workflow": PATH}]
+
+
+def test_auth_records_same_timestamp_higher_id_as_newer() -> None:
+    fake = FakeApproval()
+    fake.runs = [
+        fake.run(id=101, created_at="2026-09-05T11:00:00Z"),
+        fake.run(id=102, created_at="2026-09-05T11:00:00Z", conclusion="success"),
+    ]
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [101]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 102, "workflow": PATH}]
 
 
 def test_create_false_patches_this_invocation_comment_not_latest_by_id() -> None:
