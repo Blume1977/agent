@@ -94,23 +94,27 @@ def _body(payload: dict, *, passes: int = 2) -> str:
     if ids == {"conformity-b", "logic-b"}:
         en_title = "Second review"
         de_title = "Zweiter Review"
-        en_sentence = f"Second review after {passes} review passes."
-        de_sentence = f"Zweiter Review nach {passes} Review-Durchläufen."
+        en_sentence = "No defects."
+        en_summary = "Nothing in this review blocks the merge."
+        de_sentence = "Keine Mängel."
+        de_summary = "Nichts aus diesem Review blockiert den Merge."
     else:
         en_title = "First review"
         de_title = "Erster Review"
         en_sentence = f"Ready after {passes} review passes."
+        en_summary = "The change is covered."
         de_sentence = f"Bereit nach {passes} Review-Durchläufen."
+        de_summary = "Die Änderung ist abgedeckt."
     return (
         "EN:\n"
         f"{en_title}\n"
         f"{en_sentence}\n"
-        "The change is covered.\n"
+        f"{en_summary}\n"
         "\n"
         "DE:\n"
         f"{de_title}\n"
         f"{de_sentence}\n"
-        "Die Änderung ist abgedeckt.\n"
+        f"{de_summary}\n"
         "\n"
         "<details>\n<summary>Details</summary>\n\n"
         + render_review_record(_renderable(payload))
@@ -179,12 +183,12 @@ def test_second_run_ready_lines_are_visible_text_missing() -> None:
     body = (
         _body(payload)
         .replace(
-            f"Second review after {passes} review passes.",
+            "No defects.",
             f"Ready after {passes} review passes.",
             1,
         )
         .replace(
-            f"Zweiter Review nach {passes} Review-Durchläufen.",
+            "Keine Mängel.",
             f"Bereit nach {passes} Review-Durchläufen.",
             1,
         )
@@ -273,15 +277,79 @@ def test_second_run_ready_lines_as_summary_are_visible_text_missing() -> None:
     passes = payload["passes"]
     body = (
         _body(payload, passes=passes)
-        .replace("The change is covered.", f"Ready after {passes} review passes.", 1)
         .replace(
-            "Die Änderung ist abgedeckt.",
+            "Nothing in this review blocks the merge.",
+            f"Ready after {passes} review passes.",
+            1,
+        )
+        .replace(
+            "Nichts aus diesem Review blockiert den Merge.",
             f"Bereit nach {passes} Review-Durchläufen.",
             1,
         )
     )
-    assert "Second review after" in body
-    assert "Zweiter Review nach" in body
+    assert "No defects." in body
+    assert "Keine Mängel." in body
+    assert validate_visible(body, passes) == ["review visible text missing"]
+
+
+def test_second_run_defect_pair_is_visible() -> None:
+    payload = _pass_payload(lanes=_run("b"))
+    body = (
+        _body(payload)
+        .replace("No defects.", "There are defects.", 1)
+        .replace("Keine Mängel.", "Es gibt Mängel.", 1)
+        .replace(
+            "Nothing in this review blocks the merge.",
+            "They do not block the merge.",
+            1,
+        )
+        .replace(
+            "Nichts aus diesem Review blockiert den Merge.",
+            "Sie blockieren den Merge nicht.",
+            1,
+        )
+    )
+    assert validate_visible(body, payload["passes"]) == []
+
+
+def test_second_run_old_combined_sentence_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("b"))
+    body = (
+        _body(payload)
+        .replace(
+            "No defects.\nNothing in this review blocks the merge.",
+            "No defects, and nothing in this review blocks the merge.",
+            1,
+        )
+        .replace(
+            "Keine Mängel.\nNichts aus diesem Review blockiert den Merge.",
+            "Keine Mängel, und nichts aus diesem Review blockiert den Merge.",
+            1,
+        )
+    )
+    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+
+
+def test_second_run_mixed_pair_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("b"))
+    body = _body(payload).replace(
+        "Nothing in this review blocks the merge.",
+        "They do not block the merge.",
+        1,
+    )
+    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+
+
+def test_second_run_pass_count_line_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("b"))
+    passes = payload["passes"]
+    body = _body(payload).replace(
+        "Nichts aus diesem Review blockiert den Merge.\n",
+        "Nichts aus diesem Review blockiert den Merge.\n"
+        f"Second review after {passes} review passes.\n",
+        1,
+    )
     assert validate_visible(body, passes) == ["review visible text missing"]
 
 
@@ -291,12 +359,12 @@ def test_second_run_ready_lines_with_second_review_title_are_visible_text_missin
     body = (
         _body(payload)
         .replace(
-            f"Second review after {passes} review passes.",
+            "No defects.",
             f"Ready after {passes} review passes.",
             1,
         )
         .replace(
-            f"Zweiter Review nach {passes} Review-Durchläufen.",
+            "Keine Mängel.",
             f"Bereit nach {passes} Review-Durchläufen.",
             1,
         )
@@ -1283,12 +1351,12 @@ def test_select_only_second_run_ready_lines_is_visible_text_missing() -> None:
     body = (
         _body(payload)
         .replace(
-            f"Second review after {passes} review passes.",
+            "No defects.",
             f"Ready after {passes} review passes.",
             1,
         )
         .replace(
-            f"Zweiter Review nach {passes} Review-Durchläufen.",
+            "Keine Mängel.",
             f"Bereit nach {passes} Review-Durchläufen.",
             1,
         )
@@ -1308,12 +1376,12 @@ def test_select_first_run_when_newer_second_run_says_ready() -> None:
     ready_second = _comment(
         _body(payload)
         .replace(
-            f"Second review after {passes} review passes.",
+            "No defects.",
             f"Ready after {passes} review passes.",
             1,
         )
         .replace(
-            f"Zweiter Review nach {passes} Review-Durchläufen.",
+            "Keine Mängel.",
             f"Bereit nach {passes} Review-Durchläufen.",
             1,
         ),

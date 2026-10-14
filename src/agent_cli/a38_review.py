@@ -133,25 +133,85 @@ def _add(reasons: list[str], text: str) -> None:
         reasons.append(text)
 
 
-def validate_visible(body: str, passes: int) -> list[str]:
-    if not isinstance(body, str) or not _is_int(passes) or passes < 1:
-        return ["review visible text missing"]
-    if _lane_ids_of(body) == set(RUNS[1]):
-        en_title = "Second review"
-        de_title = "Zweiter Review"
-        en_sentence = f"Second review after {passes} review passes."
-        de_sentence = f"Zweiter Review nach {passes} Review-Durchläufen."
-    else:
-        en_title = "First review"
-        de_title = "Erster Review"
-        en_sentence = f"Ready after {passes} review passes."
-        de_sentence = f"Bereit nach {passes} Review-Durchläufen."
+# The second review's two sentences are this pair, in this order, in both
+# languages. The pass-count line is not one of them.
+_SECOND_VISIBLE = (
+    (
+        "No defects.",
+        "Nothing in this review blocks the merge.",
+        "Keine Mängel.",
+        "Nichts aus diesem Review blockiert den Merge.",
+    ),
+    (
+        "There are defects.",
+        "They do not block the merge.",
+        "Es gibt Mängel.",
+        "Sie blockieren den Merge nicht.",
+    ),
+)
+
+
+def _visible_lines(body: str) -> list[str]:
     begin = body.find(REVIEW_BEGIN)
     end = body.find(REVIEW_END)
     visible = body
     if 0 <= begin < end:
-        visible = body[:begin] + body[end + len(REVIEW_END) :]
-    lines = visible.splitlines()
+        visible = body[: begin] + body[end + len(REVIEW_END) :]
+    return visible.splitlines()
+
+
+def _prefix_matches(lines: list[str], expected: tuple[str, ...]) -> bool:
+    """Required lines in order. Blank lines may separate them; other text may not."""
+    position = 0
+    for want in expected:
+        found = -1
+        for index in range(position, len(lines)):
+            if lines[index].strip():
+                found = index
+                break
+        if found < 0 or lines[found] != want:
+            return False
+        position = found + 1
+    return True
+
+
+def validate_visible(body: str, passes: int) -> list[str]:
+    if not isinstance(body, str) or not _is_int(passes) or passes < 1:
+        return ["review visible text missing"]
+    lines = _visible_lines(body)
+    if _lane_ids_of(body) == set(RUNS[1]):
+        matched = any(
+            _prefix_matches(
+                lines,
+                (
+                    "EN:",
+                    "Second review",
+                    found,
+                    blocks,
+                    "DE:",
+                    "Zweiter Review",
+                    de_found,
+                    de_blocks,
+                ),
+            )
+            for found, blocks, de_found, de_blocks in _SECOND_VISIBLE
+        )
+        if not matched:
+            return ["review visible text missing"]
+        # Ready lines are the first run. The pass-count lines are neither run.
+        banned = (
+            f"Ready after {passes} review passes.",
+            f"Bereit nach {passes} Review-Durchläufen.",
+            f"Second review after {passes} review passes.",
+            f"Zweiter Review nach {passes} Review-Durchläufen.",
+        )
+        if any(line in banned for line in lines):
+            return ["review visible text missing"]
+        return []
+    en_title = "First review"
+    de_title = "Erster Review"
+    en_sentence = f"Ready after {passes} review passes."
+    de_sentence = f"Bereit nach {passes} Review-Durchläufen."
 
     def next_content(start: int) -> int:
         """Next non-blank line. Blank lines may separate the required lines; other text may not."""
@@ -177,17 +237,6 @@ def validate_visible(body: str, passes: int) -> list[str]:
         de_sentence_at = -1
     de_summary = next_content(de_sentence_at + 1) if de_sentence_at >= 0 else -1
     if min(en_at, title_at, ready_at, summary_at, de_at, de_title_at, de_sentence_at, de_summary) < 0:
-        return ["review visible text missing"]
-    # The ready sentences belong only to the first run. A second-run comment
-    # that still uses them, including as the summary, is not a declaration.
-    if en_title == "Second review" and any(
-        line
-        in (
-            f"Ready after {passes} review passes.",
-            f"Bereit nach {passes} Review-Durchläufen.",
-        )
-        for line in lines
-    ):
         return ["review visible text missing"]
     return []
 
