@@ -164,7 +164,15 @@ not mark ready if it denies. Then one comment whose lanes are exactly
 `conformity-b` with `logic-b` is optional and does not delay Ready. It does
 not satisfy Ready, does not start CI, and is ignored when the guard chooses
 the review comment. A newer one does not hide an older valid first-run
-comment. Posted before the first run, it still does not satisfy Ready. If
+comment. Choosing that comment ignores the second run. The newest
+well-formed second-run comment that covers this head still returns a ready
+pull request to draft when its JSON boolean `blocks_merge` is true and
+`defects` is an integer >= 1. The reason is `Review defects block the merge`.
+A write hold does not keep Ready. A newer well-formed second-run comment
+with `blocks_merge` false clears that. A comment that does not parse, or
+whose `blocks_merge` is not that boolean paired with a counted `defects`,
+does not clear an older blocking comment and does not itself return the
+pull request to draft. Posted before the first run, it still does not satisfy Ready. If
 the only review comment is the second run, the result is `review completion
 comment missing`. A comment that contains both full runs is neither comment
 (reason `review runs must be separate comments`). Then mark the GitHub

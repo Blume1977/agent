@@ -10,6 +10,7 @@ import pytest
 from agent_cli.a38_guard import LOCAL_CI_BEGIN, LOCAL_CI_END, choose_author_report
 from agent_cli.allow import codex_second_review_na
 from agent_cli.a38_review import (
+    BLOCKING_REVIEW_REASON,
     COMPLIANCE_PROMPT,
     REVIEW_BEGIN,
     REVIEW_END,
@@ -113,8 +114,16 @@ def _body(payload: dict, *, passes: int = 2) -> str:
     if ids == {"conformity-b", "logic-b"}:
         en_title = "Second review"
         de_title = "Zweiter Review"
-        en_lines = ["No defects."]
-        de_lines = ["Keine Mängel."]
+        defects = payload.get("defects")
+        if payload.get("blocks_merge") is True:
+            en_lines = ["There are defects that must be fixed."]
+            de_lines = ["Es gibt Mängel, die behoben werden müssen."]
+        elif isinstance(defects, int) and not isinstance(defects, bool) and defects >= 1:
+            en_lines = ["There are defects that do not block the merge."]
+            de_lines = ["Es gibt Mängel, die den Merge nicht blockieren."]
+        else:
+            en_lines = ["No defects."]
+            de_lines = ["Keine Mängel."]
     else:
         en_title = "First review"
         de_title = "Erster Review"
@@ -179,14 +188,7 @@ def test_visible_text_rejects_a_line_between_required_steps() -> None:
     record = (
         "<details>\n<summary>Details</summary>\n\n"
         f"Head: `{HEAD}`\n"
-        "Runs: `conformity-a` with `logic-a`, and `conformity-b` with `logic-b`.\n"
-        "Lane `conformity-a`:\n"
-        "Provider: Example\n"
-        "Model: Example model\n"
-        "Model number: example-1\n"
-        "Prompt:\n"
-        "```\nnot the declaration\n```\n"
-        "Result: pass, no findings left.\n"
+        "The amount is checked before it is sent.\n"
         "Set aside: a note judged not relevant because it contradicted the repo convention.\n\n"
     )
     recorded = _body(payload).replace(f"{REVIEW_BEGIN}\n", record + f"{REVIEW_BEGIN}\n", 1)
@@ -333,14 +335,97 @@ def test_second_run_ready_lines_as_summary_are_visible_text_missing() -> None:
     assert validate_visible(body, passes) == ["review visible text missing"]
 
 
-def test_second_run_defect_pair_is_visible() -> None:
+def _v2_lane(lane_id: str) -> dict:
+    return {
+        "id": lane_id,
+        "result": "pass",
+        "status": "complete",
+        "provider": _RECORD_PROVIDER,
+        "model": _RECORD_MODEL,
+        "model_number": _RECORD_NUMBER,
+        "prompt": _RECORD_PROMPT,
+    }
+
+
+def _v2_second(*, blocks_merge: bool, defects: int) -> dict:
+    return {
+        "schema": "a38-review/v2",
+        "head": HEAD,
+        "passes": 1,
+        "defects": defects,
+        "set_aside": "none",
+        "blocks_merge": blocks_merge,
+        "lanes": [_v2_lane("conformity-b"), _v2_lane("logic-b")],
+    }
+
+
+def test_second_run_non_blocking_defects_are_visible() -> None:
+    payload = _v2_second(blocks_merge=False, defects=2)
+    body = _body(payload, passes=1)
+    assert "There are defects that do not block the merge." in body
+    assert "Es gibt Mängel, die den Merge nicht blockieren." in body
+    assert "They do not block the merge." not in body
+    assert validate_visible(body, payload["passes"]) == []
+    assert validate_declaration(payload, head=HEAD, markdown_only=False) == []
+    assert validate_review_record(body, payload) == []
+
+
+def test_second_run_blocking_defects_are_visible() -> None:
+    payload = _v2_second(blocks_merge=True, defects=1)
+    body = _body(payload, passes=1)
+    assert "There are defects that must be fixed." in body
+    assert "Es gibt Mängel, die behoben werden müssen." in body
+    assert validate_visible(body, payload["passes"]) == []
+    assert validate_declaration(payload, head=HEAD, markdown_only=False) == []
+
+
+def test_second_run_blocking_flag_without_a_count_is_rejected() -> None:
+    payload = _v2_second(blocks_merge=True, defects=0)
+    assert "review blocking defects must be counted" in validate_declaration(
+        payload, head=HEAD, markdown_only=False
+    )
+    assert validate_visible(_body(payload, passes=1), payload["passes"]) == [
+        "review visible text missing"
+    ]
+
+
+def test_second_run_v2_without_blocks_merge_is_rejected() -> None:
+    payload = _v2_second(blocks_merge=False, defects=0)
+    del payload["blocks_merge"]
+    assert "review blocks_merge missing" in validate_declaration(
+        payload, head=HEAD, markdown_only=False
+    )
+    assert validate_visible(_body(payload, passes=1), payload["passes"]) == [
+        "review visible text missing"
+    ]
+
+
+def test_second_run_string_flag_is_not_a_boolean() -> None:
+    payload = _v2_second(blocks_merge=True, defects=2)
+    payload["blocks_merge"] = "true"
+    reasons = validate_declaration(payload, head=HEAD, markdown_only=False)
+    assert "review blocks_merge must be a boolean" in reasons
+    assert validate_visible(_body(payload, passes=1), payload["passes"]) == [
+        "review visible text missing"
+    ]
+
+
+def test_first_run_rejects_blocks_merge() -> None:
+    payload = _v2_second(blocks_merge=True, defects=1)
+    payload["lanes"] = [_v2_lane("conformity-a"), _v2_lane("logic-a")]
+    reasons = validate_declaration(payload, head=HEAD, markdown_only=False)
+    assert "review blocks_merge is only for the second run" in reasons
+    assert "review defects must be 0" in reasons
+
+
+def test_second_run_old_defect_pair_is_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("b"))
     body = (
         _body(payload)
         .replace("No defects.\n", "There are defects.\nThey do not block the merge.\n", 1)
         .replace("Keine Mängel.\n", "Es gibt Mängel.\nSie blockieren den Merge nicht.\n", 1)
     )
-    assert validate_visible(body, payload["passes"]) == []
+    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
 
 
 def test_second_run_old_combined_sentence_is_visible_text_missing() -> None:
@@ -360,8 +445,8 @@ def test_second_run_old_combined_sentence_is_visible_text_missing() -> None:
 def test_second_run_mixed_pair_is_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("b"))
     body = _body(payload).replace(
-        "No defects.\n",
-        "There are defects.\nThey do not block the merge.\n",
+        "No defects.",
+        "There are defects that do not block the merge.",
         1,
     )
     assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
@@ -1734,6 +1819,106 @@ def _gate(api: _GateApi, comments: list[dict]) -> tuple[bool, list[str]]:
 
 def _ahead() -> tuple[int, dict[str, int | str], dict]:
     return 200, {"status": "ahead", "ahead_by": 1, "behind_by": 0}, {}
+
+
+def _gate_api() -> _GateApi:
+    return _GateApi({BASE: "2026-07-01T00:00:00Z", HEAD: "2026-09-01T00:00:00Z"})
+
+
+def _first_run_comment() -> dict:
+    return _comment(
+        _body(_pass_payload(lanes=_run("a"))),
+        cid=1,
+        user=10,
+        created="2026-09-02T00:00:00Z",
+    )
+
+
+def _second_run_comment(
+    payload: dict, *, cid: int, created: str
+) -> dict:
+    return _comment(_body(payload, passes=payload["passes"]), cid=cid, user=10, created=created)
+
+
+def test_gate_drafts_when_the_second_run_blocks_the_merge() -> None:
+    second = _second_run_comment(
+        _v2_second(blocks_merge=True, defects=2),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
+    assert ok is False
+    assert reasons == [BLOCKING_REVIEW_REASON]
+
+
+def test_gate_keeps_ready_when_second_run_defects_do_not_block() -> None:
+    second = _second_run_comment(
+        _v2_second(blocks_merge=False, defects=2),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
+    assert ok is True
+    assert reasons == []
+
+
+def test_gate_a_later_clear_second_run_drops_an_older_block() -> None:
+    blocked = _second_run_comment(
+        _v2_second(blocks_merge=True, defects=1),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    cleared = _second_run_comment(
+        _v2_second(blocks_merge=False, defects=0),
+        cid=3,
+        created="2026-09-04T00:00:00Z",
+    )
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), blocked, cleared])
+    assert ok is True
+    assert reasons == []
+
+
+def test_gate_true_without_a_count_does_not_draft() -> None:
+    second = _second_run_comment(
+        _v2_second(blocks_merge=True, defects=0),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
+    assert ok is True
+    assert reasons == []
+
+
+def test_gate_a_broken_newer_second_run_does_not_clear_a_block() -> None:
+    blocked = _second_run_comment(
+        _v2_second(blocks_merge=True, defects=2),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    broken_payload = _v2_second(blocks_merge=True, defects=2)
+    broken_payload["blocks_merge"] = "true"
+    string_flag = _second_run_comment(
+        broken_payload, cid=3, created="2026-09-04T00:00:00Z"
+    )
+    missing = _v2_second(blocks_merge=False, defects=0)
+    del missing["blocks_merge"]
+    missing_flag = _second_run_comment(
+        missing, cid=4, created="2026-09-05T00:00:00Z"
+    )
+    unreadable = _second_run_comment(
+        _v2_second(blocks_merge=False, defects=0),
+        cid=5,
+        created="2026-09-06T00:00:00Z",
+    )
+    unreadable["body"] = unreadable["body"].replace(
+        '"blocks_merge": false', '"blocks_merge": ', 1
+    )
+    ok, reasons = _gate(
+        _gate_api(),
+        [_first_run_comment(), blocked, string_flag, missing_flag, unreadable],
+    )
+    assert ok is False
+    assert reasons == [BLOCKING_REVIEW_REASON]
 
 
 def test_gate_keeps_a_review_of_a_commit_still_in_the_pull_request() -> None:

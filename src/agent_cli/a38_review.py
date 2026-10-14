@@ -34,6 +34,7 @@ from typing import Any, Mapping, Sequence
 REVIEW_BEGIN = "<!-- A38-REVIEW:v1 -->"
 REVIEW_END = "<!-- /A38-REVIEW:v1 -->"
 LIFECYCLE_REASON = "Review completion missing"
+BLOCKING_REVIEW_REASON = "Review defects block the merge"
 # One full run is conformity plus logic of the same suffix. The other run is optional.
 RUNS = (
     ("conformity-a", "logic-a"),
@@ -49,7 +50,7 @@ _PASS_KEYS = frozenset({"id", "result", "status"})
 _PASS_KEYS_V2 = _PASS_KEYS | {"provider", "model", "model_number", "prompt"}
 _NA_KEYS = frozenset({"id", "result", "evidence"})
 _OBJECT_KEYS = frozenset({"schema", "head", "passes", "defects", "lanes"})
-_OBJECT_KEYS_V2 = _OBJECT_KEYS | {"set_aside"}
+_OBJECT_KEYS_V2 = _OBJECT_KEYS | {"set_aside", "blocks_merge"}
 _SCHEMA_V2 = "a38-review/v2"
 # Reminder given to every pass lane when the base revision has REVIEW.md.
 # Extra sentences may follow. This is not a proof that a model obeyed it.
@@ -133,18 +134,16 @@ def _add(reasons: list[str], text: str) -> None:
         reasons.append(text)
 
 
-# The second review says whether this run found defects. With no defects
-# that is one sentence. With defects it is two, and the second says they
-# do not block the merge. The pass-count line is neither.
-_SECOND_VISIBLE = (
-    (
-        ("No defects.",),
-        ("Keine Mängel.",),
-    ),
-    (
-        ("There are defects.", "They do not block the merge."),
-        ("Es gibt Mängel.", "Sie blockieren den Merge nicht."),
-    ),
+# The second review uses one sentence. The JSON boolean blocks_merge and
+# the defect count pick which sentence. A pass-count line is none of them.
+_NO_DEFECTS = (("No defects.",), ("Keine Mängel.",))
+_NON_BLOCKING = (
+    ("There are defects that do not block the merge.",),
+    ("Es gibt Mängel, die den Merge nicht blockieren.",),
+)
+_BLOCKING = (
+    ("There are defects that must be fixed.",),
+    ("Es gibt Mängel, die behoben werden müssen.",),
 )
 
 
@@ -170,6 +169,31 @@ def _prefix_matches(lines: list[str], expected: tuple[str, ...]) -> bool:
             return False
         position = found + 1
     return True
+
+
+def _second_sentences(
+    payload: Mapping[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """The one sentence each language must show for this second-run payload."""
+    defects = payload.get("defects")
+    if not _is_int(defects):
+        return None
+    # A v1 second run can only say that it found no defects. v2 must name
+    # the boolean; a missing or non-boolean flag is not one of the sentences.
+    if payload.get("schema") != _SCHEMA_V2:
+        if defects == 0 and "blocks_merge" not in payload:
+            return _NO_DEFECTS
+        return None
+    blocks = payload.get("blocks_merge")
+    if type(blocks) is not bool:
+        return None
+    if blocks and defects >= 1:
+        return _BLOCKING
+    if not blocks and defects == 0:
+        return _NO_DEFECTS
+    if not blocks and defects >= 1:
+        return _NON_BLOCKING
+    return None
 
 
 def _review_titles(kind: str, model: str | None) -> tuple[str, str]:
@@ -245,18 +269,21 @@ def validate_visible(body: str, passes: int) -> list[str]:
     if required and not model:
         return ["review visible text missing"]
     if _lane_ids_of(body) == set(RUNS[1]):
+        try:
+            second_payload = parse_review_block(body)
+        except ReviewError:
+            return ["review visible text missing"]
+        pair = _second_sentences(second_payload)
+        if pair is None:
+            return ["review visible text missing"]
+        en_lines, de_lines = pair
         en_title, de_title = _review_titles("second", model)
-        matched = any(
-            _prefix_matches(
-                lines,
-                ("EN:", en_title, *en_lines, "DE:", de_title, *de_lines),
-            )
-            for en_lines, de_lines in _SECOND_VISIBLE
-        )
-        if not matched:
+        if not _prefix_matches(
+            lines, ("EN:", en_title, *en_lines, "DE:", de_title, *de_lines)
+        ):
             return ["review visible text missing"]
         # Ready lines are the first run. The pass-count lines are neither run.
-        # A second review that found no defects does not add a merge sentence.
+        # The old two-line defect pair is not a second-run sentence.
         banned = (
             f"Ready after {passes} review passes.",
             f"Bereit nach {passes} Review-Durchläufen.",
@@ -264,6 +291,10 @@ def validate_visible(body: str, passes: int) -> list[str]:
             f"Zweiter Review nach {passes} Review-Durchläufen.",
             "Nothing in this review blocks the merge.",
             "Nichts aus diesem Review blockiert den Merge.",
+            "There are defects.",
+            "They do not block the merge.",
+            "Es gibt Mängel.",
+            "Sie blockieren den Merge nicht.",
         )
         if any(line in banned for line in lines):
             return ["review visible text missing"]
@@ -407,6 +438,43 @@ def _validate_lanes(
     return reasons
 
 
+def _payload_is_second_run(payload: Mapping[str, Any]) -> bool:
+    lanes = payload.get("lanes")
+    if not isinstance(lanes, list):
+        return False
+    ids = {
+        lane.get("id")
+        for lane in lanes
+        if isinstance(lane, Mapping) and isinstance(lane.get("id"), str)
+    }
+    return ids == set(RUNS[1])
+
+
+def _defect_reasons(payload: Mapping[str, Any]) -> list[str]:
+    """First run: zero defects. Second run: blocks_merge decides the count."""
+    reasons: list[str] = []
+    defects = payload.get("defects")
+    second = _payload_is_second_run(payload)
+    has_flag = "blocks_merge" in payload
+    flag = payload.get("blocks_merge")
+    if has_flag and type(flag) is not bool:
+        _add(reasons, "review blocks_merge must be a boolean")
+    if second and payload.get("schema") == _SCHEMA_V2:
+        if not has_flag:
+            _add(reasons, "review blocks_merge missing")
+        elif flag is True:
+            if not _is_int(defects) or defects < 1:
+                _add(reasons, "review blocking defects must be counted")
+        elif flag is False:
+            if not _is_int(defects) or defects < 0:
+                _add(reasons, "review defects must be an integer >= 0")
+    elif not _is_int(defects) or defects != 0:
+        _add(reasons, "review defects must be 0")
+    if has_flag and not second:
+        _add(reasons, "review blocks_merge is only for the second run")
+    return reasons
+
+
 def validate_declaration(
     payload: Mapping[str, Any],
     *,
@@ -443,8 +511,7 @@ def validate_declaration(
     passes = payload.get("passes")
     if not _is_int(passes) or passes < 1:
         _add(reasons, "review passes must be an integer >= 1")
-    if payload.get("defects") != 0 or not _is_int(payload.get("defects")):
-        _add(reasons, "review defects must be 0")
+    reasons.extend(_defect_reasons(payload))
     lanes = payload.get("lanes")
     if not isinstance(lanes, list):
         _add(reasons, "review lanes missing")
@@ -576,7 +643,9 @@ def render_review_record(payload: Mapping[str, Any], *, rules_bound: bool = True
         else:
             raise ReviewError("review pass lane is malformed")
         lines.append("")
-    lines.append(f"Final result: `passes` {payload.get('passes')}, `defects` 0.")
+    lines.append(
+        f"Final result: `passes` {payload.get('passes')}, `defects` {payload.get('defects')}."
+    )
     aside = payload.get("set_aside")
     lines.append(
         f"Set aside: {aside}" if isinstance(aside, str) and aside.strip() else "Set aside: none."
@@ -911,8 +980,8 @@ def _same_count(left: re.Match[str], right: re.Match[str]) -> bool:
     return left.start(1) == right.start(1) and left.end(1) == right.end(1)
 
 
-def _final_result_ok(line: str, passes: object) -> bool:
-    if not _is_int(passes):
+def _final_result_ok(line: str, passes: object, defects: object = 0) -> bool:
+    if not _is_int(passes) or not _is_int(defects):
         return False
     if not _starts_with_label(line, "Final result"):
         return False
@@ -957,11 +1026,11 @@ def _final_result_ok(line: str, passes: object) -> bool:
             good_defects.append(number)
     if not good_passes or any(number != passes for number in good_passes):
         return False
-    if not good_defects or any(number != 0 for number in good_defects):
+    if not good_defects or any(number != defects for number in good_defects):
         return False
     if any(number == passes for number in negated_passes):
         return False
-    if any(number == 0 for number in negated_defects):
+    if any(number == defects for number in negated_defects):
         return False
     return True
 
@@ -1032,8 +1101,9 @@ def validate_review_record(
     if [lane_id for _, lane_id in headers] != lane_ids:
         _add(reasons, "review lane record missing")
     passes = payload.get("passes")
+    defects = payload.get("defects")
     finals = [line for line in lines if _starts_with_label(line, "Final result")]
-    if not finals or any(not _final_result_ok(line, passes) for line in finals):
+    if not finals or any(not _final_result_ok(line, passes, defects) for line in finals):
         _add(reasons, "review final result does not match")
     final_at = next(
         (index for index, line in enumerate(lines) if _starts_with_label(line, "Final result")),
@@ -1214,42 +1284,22 @@ def _declaration_reasons(
     return reasons
 
 
-def select_review_comment(
+def _review_candidates(
     comments: Sequence[Mapping[str, Any]],
     *,
     author_id: int,
     guard_user_id: int,
-    committed_at: str,
-    head: str,
-    markdown_only: bool,
-    rules_bound: bool = True,
-    covered_at: Mapping[str, str] | None = None,
-    ancestry_unavailable: Collection[str] | None = None,
-) -> tuple[Mapping[str, Any] | None, list[str]]:
-    """Newest valid first-run author declaration that still covers this head.
+    committed: datetime,
+    covered_at: Mapping[str, str] | None,
+    ancestry_unavailable: Collection[str] | None,
+) -> tuple[list[tuple[datetime, int, Mapping[str, Any], str | None]], bool]:
+    """Author review comments that are new enough to cover this head.
 
-    Age is ``created_at`` only. An edit does not make a comment newer; post a
-    new comment instead. Other comments do not remove an earlier valid
-    declaration. A newer malformed declaration falls back to an older valid one.
-    A later second-run comment is ignored and does not hide an older valid
-    first-run comment. A comment that also carries local-CI markers is skipped.
-
-    Without ``covered_at``, the declaration must name ``head`` and the comment
-    must be created after ``committed_at``. With ``covered_at``, each key is a
-    SHA the caller has proved is ``head`` or an ancestor of it, and the value
-    is that SHA's committer time. The comment must be created after the commit
-    it names, not after every later commit. A declared SHA that is not one of
-    those keys is ``review head does not match the pull request``, including
-    when the comment is older than the current head. ``ancestry_unavailable``
-    lists SHAs whose ancestry could not be read; those declarations fail closed.
+    The fourth item is a forced reason when ancestry cannot be read or the
+    declared head is not this pull request. ``mixed_after_head`` is true when
+    a comment carries both the review block and the local CI report.
     """
-    committed = _utc(committed_at)
-    if committed is None:
-        return None, ["review commit time unavailable"]
-    if covered_at is not None and _utc(covered_at.get(head, "")) is None:
-        return None, ["review commit time unavailable"]
     unavailable = frozenset(ancestry_unavailable or ())
-    covered_heads = frozenset(covered_at) if covered_at is not None else None
     candidates: list[tuple[datetime, int, Mapping[str, Any], str | None]] = []
     mixed_after_head = False
     for comment in comments:
@@ -1295,6 +1345,130 @@ def select_review_comment(
         if boundary is not None and stamp <= boundary:
             continue
         candidates.append((stamp, int(comment["id"]), comment, forced))
+    return candidates, mixed_after_head
+
+
+def _second_run_merge_signal(payload: Mapping[str, Any]) -> bool | None:
+    """True drafts, False clears, None is not a signal.
+
+    Only a JSON boolean counts. The string ``"true"`` does not. A true flag
+    without a counted defect does not draft and does not clear an older
+    signal. A v1 second run with ``defects`` 0 and no flag clears.
+    """
+    if not _payload_is_second_run(payload):
+        return None
+    defects = payload.get("defects")
+    if (
+        payload.get("schema") == "a38-review/v1"
+        and "blocks_merge" not in payload
+        and defects == 0
+    ):
+        return False
+    if payload.get("schema") != _SCHEMA_V2 or type(payload.get("blocks_merge")) is not bool:
+        return None
+    if payload.get("blocks_merge") is True and _is_int(defects) and defects >= 1:
+        return True
+    if payload.get("blocks_merge") is False and _is_int(defects) and defects >= 0:
+        return False
+    return None
+
+
+def newest_second_run_blocks_merge(
+    comments: Sequence[Mapping[str, Any]],
+    *,
+    author_id: int,
+    guard_user_id: int,
+    committed_at: str,
+    head: str,
+    covered_at: Mapping[str, str] | None = None,
+    ancestry_unavailable: Collection[str] | None = None,
+) -> bool:
+    """True when the newest well-formed second-run comment counts blocking defects.
+
+    The signal is boolean ``blocks_merge`` true together with ``defects`` >= 1.
+    A newer well-formed second-run comment with ``blocks_merge`` false clears
+    the draft. A comment that does not parse, or whose flag is not a boolean
+    paired with a counted defect, is skipped: it neither drafts nor clears.
+    This does not choose the completion comment.
+    """
+    committed = _utc(committed_at)
+    if committed is None:
+        return False
+    if covered_at is not None and _utc(covered_at.get(head, "")) is None:
+        return False
+    candidates, _mixed = _review_candidates(
+        comments,
+        author_id=author_id,
+        guard_user_id=guard_user_id,
+        committed=committed,
+        covered_at=covered_at,
+        ancestry_unavailable=ancestry_unavailable,
+    )
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    for _stamp, _cid, comment, forced in candidates:
+        if forced:
+            continue
+        body = comment.get("body")
+        text = body if isinstance(body, str) else ""
+        if _lane_ids_of(text) != set(RUNS[1]):
+            continue
+        try:
+            payload = parse_review_block(text)
+        except ReviewError:
+            continue
+        signal = _second_run_merge_signal(payload)
+        if signal is None:
+            continue
+        return signal
+    return False
+
+
+def select_review_comment(
+    comments: Sequence[Mapping[str, Any]],
+    *,
+    author_id: int,
+    guard_user_id: int,
+    committed_at: str,
+    head: str,
+    markdown_only: bool,
+    rules_bound: bool = True,
+    covered_at: Mapping[str, str] | None = None,
+    ancestry_unavailable: Collection[str] | None = None,
+) -> tuple[Mapping[str, Any] | None, list[str]]:
+    """Newest valid first-run author declaration that still covers this head.
+
+    Age is ``created_at`` only. An edit does not make a comment newer; post a
+    new comment instead. Other comments do not remove an earlier valid
+    declaration. A newer malformed declaration falls back to an older valid one.
+    A later second-run comment is ignored for this choice and does not hide
+    an older valid first-run comment. Blocking defects on that later comment
+    are a separate gate: they do not choose this comment, and they still
+    return Ready to Draft. A comment that also carries local-CI markers
+    is skipped.
+
+    Without ``covered_at``, the declaration must name ``head`` and the comment
+    must be created after ``committed_at``. With ``covered_at``, each key is a
+    SHA the caller has proved is ``head`` or an ancestor of it, and the value
+    is that SHA's committer time. The comment must be created after the commit
+    it names, not after every later commit. A declared SHA that is not one of
+    those keys is ``review head does not match the pull request``, including
+    when the comment is older than the current head. ``ancestry_unavailable``
+    lists SHAs whose ancestry could not be read; those declarations fail closed.
+    """
+    committed = _utc(committed_at)
+    if committed is None:
+        return None, ["review commit time unavailable"]
+    if covered_at is not None and _utc(covered_at.get(head, "")) is None:
+        return None, ["review commit time unavailable"]
+    covered_heads = frozenset(covered_at) if covered_at is not None else None
+    candidates, mixed_after_head = _review_candidates(
+        comments,
+        author_id=author_id,
+        guard_user_id=guard_user_id,
+        committed=committed,
+        covered_at=covered_at,
+        ancestry_unavailable=ancestry_unavailable,
+    )
     if not candidates:
         if mixed_after_head:
             return None, ["local CI report and review record must be separate comments"]
@@ -1670,6 +1844,18 @@ def evaluate_review_gate(
             ancestry_unavailable=unread,
         )
         reasons.extend(selected)
+        # The completion comment stays the first run. A second run that
+        # counts blocking defects still returns Ready to Draft.
+        if newest_second_run_blocks_merge(
+            comments,
+            author_id=author_id,
+            guard_user_id=guard_id,
+            committed_at=committed_at,
+            head=head,
+            covered_at=covered,
+            ancestry_unavailable=unread,
+        ):
+            _add(reasons, BLOCKING_REVIEW_REASON)
     reasons.extend(_load_threads(api, repo, number))
     if reasons:
         return False, reasons

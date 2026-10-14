@@ -7,6 +7,7 @@ import pytest
 
 from agent_cli import pr_lifecycle
 from agent_cli.a38_guard import GuardError, reconcile_pull, status_context_enforce
+from agent_cli.a38_review import BLOCKING_REVIEW_REASON, LIFECYCLE_REASON
 from agent_cli.pr_guard_config import load_pr_guard_config, PrGuardConfigError
 from agent_cli.pr_lifecycle import (
     AUTH_MARKER,
@@ -16,6 +17,7 @@ from agent_cli.pr_lifecycle import (
     visible_transition_titles,
 )
 from test_a38_guard import AUTHOR_ID, HEAD, BASE, BASE2, BOT_ID, REPO, _report_comment
+from test_a38_review import _body, _v2_second
 from test_workflow_approval_core import ApprovalAPI, PATH
 
 pytestmark = pytest.mark.no_pg
@@ -1321,6 +1323,56 @@ def test_write_author_ready_missing_review_returns_to_draft():
     body = "\n".join(comment.get("body", "") for comment in fake.comments)
     assert "the review completion is missing or invalid" in body
     assert "CI is not green" not in body
+
+
+def _author_second_run(*, blocks_merge: bool, defects: int) -> dict:
+    payload = _v2_second(blocks_merge=blocks_merge, defects=defects)
+    payload["head"] = HEAD
+    return {
+        "id": 4242,
+        "created_at": "2099-06-01T00:00:00Z",
+        "updated_at": "2099-06-01T00:00:00Z",
+        "user": {"id": AUTHOR_ID, "login": "author", "type": "User"},
+        "body": _body(payload, passes=1),
+    }
+
+
+def _write_author(fake: LifecycleAPI) -> None:
+    fake.comments.clear()
+    fake.permissions["author"] = {
+        "permission": "write",
+        "user": {"id": AUTHOR_ID, "login": "author", "type": "User"},
+    }
+
+
+def test_write_author_ready_blocking_second_run_returns_to_draft():
+    fake = LifecycleAPI()
+    _write_author(fake)
+    fake.comments.append(_author_second_run(blocks_merge=True, defects=2))
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert result.write_ready
+    assert result.write_ready_reason == "author has write"
+    assert result.lifecycle["action"] == "draft"
+    assert BLOCKING_REVIEW_REASON in result.lifecycle["reasons"]
+    assert LIFECYCLE_REASON not in result.lifecycle["reasons"]
+    assert fake.pull["draft"]
+    assert fake.transitions == [True]
+    body = "\n".join(comment.get("body", "") for comment in fake.comments)
+    assert "the second review found defects that must be fixed" in body
+    assert "der zweite Review Mängel gefunden hat, die behoben werden müssen" in body
+    assert "the review completion is missing or invalid" not in body
+
+
+def test_write_author_ready_non_blocking_second_run_stays_ready():
+    fake = LifecycleAPI()
+    _write_author(fake)
+    fake.comments.append(_author_second_run(blocks_merge=False, defects=1))
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert result.review_ok
+    assert result.lifecycle["action"] == "unchanged"
+    assert BLOCKING_REVIEW_REASON not in result.lifecycle["reasons"]
+    assert fake.transitions == []
+    assert not fake.pull["draft"]
 
 
 def test_review_fail_clears_then_auto_ready_on_valid_review():
