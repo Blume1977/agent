@@ -10,6 +10,7 @@ import pytest
 from agent_cli.a38_guard import LOCAL_CI_BEGIN, LOCAL_CI_END, choose_author_report
 from agent_cli.allow import codex_second_review_na
 from agent_cli.a38_review import (
+    BLOCKING_REVIEW_REASON,
     COMPLIANCE_PROMPT,
     REVIEW_BEGIN,
     REVIEW_END,
@@ -66,6 +67,25 @@ _RECORD_NUMBER = "acme-1"
 _RECORD_PROMPT = COMPLIANCE_PROMPT
 
 
+def _visible_model(payload: dict) -> str | None:
+    """Model the visible title names. Pass lanes without one use the record default."""
+    lanes = payload.get("lanes")
+    if not isinstance(lanes, list):
+        return None
+    models: list[str] = []
+    for lane in lanes:
+        if not isinstance(lane, dict) or lane.get("result") == "n_a":
+            continue
+        named = lane.get("model")
+        if isinstance(named, str) and named.strip():
+            models.append(named.strip())
+        else:
+            models.append(_RECORD_MODEL)
+    if not models or len(set(models)) != 1:
+        return None
+    return models[0]
+
+
 def _renderable(payload: dict) -> dict:
     """Facts the human record needs. A v1 payload must not carry them."""
     if payload.get("schema") == "a38-review/v2":
@@ -94,24 +114,34 @@ def _body(payload: dict, *, passes: int = 2) -> str:
     if ids == {"conformity-b", "logic-b"}:
         en_title = "Second review"
         de_title = "Zweiter Review"
-        en_sentence = f"Second review after {passes} review passes."
-        de_sentence = f"Zweiter Review nach {passes} Review-Durchläufen."
+        defects = payload.get("defects")
+        if payload.get("blocks_merge") is True:
+            en_lines = ["There are defects that must be fixed."]
+            de_lines = ["Es gibt Mängel, die behoben werden müssen."]
+        elif isinstance(defects, int) and not isinstance(defects, bool) and defects >= 1:
+            en_lines = ["There are defects that do not block the merge."]
+            de_lines = ["Es gibt Mängel, die den Merge nicht blockieren."]
+        else:
+            en_lines = ["No defects."]
+            de_lines = ["Keine Mängel."]
     else:
         en_title = "First review"
         de_title = "Erster Review"
-        en_sentence = f"Ready after {passes} review passes."
-        de_sentence = f"Bereit nach {passes} Review-Durchläufen."
+        en_lines = [f"Ready after {passes} review passes.", "The change is covered."]
+        de_lines = [f"Bereit nach {passes} Review-Durchläufen.", "Die Änderung ist abgedeckt."]
+    model = _visible_model(payload)
+    if model:
+        en_title = f"{en_title} with {model}"
+        de_title = f"{de_title} mit {model}"
     return (
         "EN:\n"
         f"{en_title}\n"
-        f"{en_sentence}\n"
-        "The change is covered.\n"
-        "\n"
+        + "".join(f"{line}\n" for line in en_lines)
+        + "\n"
         "DE:\n"
         f"{de_title}\n"
-        f"{de_sentence}\n"
-        "Die Änderung ist abgedeckt.\n"
-        "\n"
+        + "".join(f"{line}\n" for line in de_lines)
+        + "\n"
         "<details>\n<summary>Details</summary>\n\n"
         + render_review_record(_renderable(payload))
         + f"{REVIEW_BEGIN}\n"
@@ -158,14 +188,7 @@ def test_visible_text_rejects_a_line_between_required_steps() -> None:
     record = (
         "<details>\n<summary>Details</summary>\n\n"
         f"Head: `{HEAD}`\n"
-        "Runs: `conformity-a` with `logic-a`, and `conformity-b` with `logic-b`.\n"
-        "Lane `conformity-a`:\n"
-        "Provider: Example\n"
-        "Model: Example model\n"
-        "Model number: example-1\n"
-        "Prompt:\n"
-        "```\nnot the declaration\n```\n"
-        "Result: pass, no findings left.\n"
+        "The amount is checked before it is sent.\n"
         "Set aside: a note judged not relevant because it contradicted the repo convention.\n\n"
     )
     recorded = _body(payload).replace(f"{REVIEW_BEGIN}\n", record + f"{REVIEW_BEGIN}\n", 1)
@@ -179,12 +202,12 @@ def test_second_run_ready_lines_are_visible_text_missing() -> None:
     body = (
         _body(payload)
         .replace(
-            f"Second review after {passes} review passes.",
+            "No defects.",
             f"Ready after {passes} review passes.",
             1,
         )
         .replace(
-            f"Zweiter Review nach {passes} Review-Durchläufen.",
+            "Keine Mängel.",
             f"Bereit nach {passes} Review-Durchläufen.",
             1,
         )
@@ -194,7 +217,10 @@ def test_second_run_ready_lines_are_visible_text_missing() -> None:
 
 def test_second_run_second_review_lines_are_visible() -> None:
     payload = _pass_payload(lanes=_run("b"))
-    assert validate_visible(_body(payload), payload["passes"]) == []
+    body = _body(payload)
+    assert "Nothing in this review blocks the merge." not in body
+    assert "Nichts aus diesem Review blockiert den Merge." not in body
+    assert validate_visible(body, payload["passes"]) == []
 
 
 def test_first_run_second_review_lines_are_visible_text_missing() -> None:
@@ -219,8 +245,8 @@ def test_first_run_second_review_lines_are_visible_text_missing() -> None:
 def test_first_run_first_review_title_is_visible() -> None:
     payload = _pass_payload(lanes=_run("a"))
     body = _body(payload)
-    assert "First review\n" in body
-    assert "Erster Review\n" in body
+    assert f"First review with {_RECORD_MODEL}\n" in body
+    assert f"Erster Review mit {_RECORD_MODEL}\n" in body
     assert validate_visible(body, payload["passes"]) == []
 
 
@@ -228,23 +254,52 @@ def test_first_run_second_review_title_is_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("a"))
     body = (
         _body(payload)
-        .replace("First review\n", "Second review\n", 1)
-        .replace("Erster Review\n", "Zweiter Review\n", 1)
+        .replace(f"First review with {_RECORD_MODEL}\n", f"Second review with {_RECORD_MODEL}\n", 1)
+        .replace(f"Erster Review mit {_RECORD_MODEL}\n", f"Zweiter Review mit {_RECORD_MODEL}\n", 1)
     )
+    assert validate_visible(body, payload["passes"]) == [
+        "review title model missing",
+        "review visible text missing",
+    ]
+
+
+def test_title_model_must_match_the_recorded_model() -> None:
+    payload = _pass_payload(lanes=_run("a"))
+    body = _body(payload).replace("Model: Acme model\n", "Model: Other model\n", 1)
     assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+
+
+def test_pass_run_without_the_model_in_the_title_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("a"))
+    body = (
+        _body(payload)
+        .replace(f"First review with {_RECORD_MODEL}", "First review", 1)
+        .replace(f"Erster Review mit {_RECORD_MODEL}", "Erster Review", 1)
+    )
+    assert validate_visible(body, payload["passes"]) == [
+        "review title model missing",
+        "review visible text missing",
+    ]
 
 
 def test_first_run_ready_lines_without_title_are_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("a"))
-    body = _body(payload).replace("First review\n", "", 1).replace("Erster Review\n", "", 1)
-    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+    body = (
+        _body(payload)
+        .replace(f"First review with {_RECORD_MODEL}\n", "", 1)
+        .replace(f"Erster Review mit {_RECORD_MODEL}\n", "", 1)
+    )
+    assert validate_visible(body, payload["passes"]) == [
+        "review title model missing",
+        "review visible text missing",
+    ]
 
 
 def test_second_run_second_review_title_is_visible() -> None:
     payload = _pass_payload(lanes=_run("b"))
     body = _body(payload)
-    assert "Second review\n" in body
-    assert "Zweiter Review\n" in body
+    assert f"Second review with {_RECORD_MODEL}\n" in body
+    assert f"Zweiter Review mit {_RECORD_MODEL}\n" in body
     assert validate_visible(body, payload["passes"]) == []
 
 
@@ -252,20 +307,26 @@ def test_second_run_first_review_title_is_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("b"))
     body = (
         _body(payload)
-        .replace("Second review\n", "First review\n", 1)
-        .replace("Zweiter Review\n", "Erster Review\n", 1)
+        .replace(f"Second review with {_RECORD_MODEL}\n", f"First review with {_RECORD_MODEL}\n", 1)
+        .replace(f"Zweiter Review mit {_RECORD_MODEL}\n", f"Erster Review mit {_RECORD_MODEL}\n", 1)
     )
-    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+    assert validate_visible(body, payload["passes"]) == [
+        "review title model missing",
+        "review visible text missing",
+    ]
 
 
 def test_second_run_second_review_lines_without_title_are_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("b"))
     body = (
         _body(payload)
-        .replace("Second review\n", "", 1)
-        .replace("Zweiter Review\n", "", 1)
+        .replace(f"Second review with {_RECORD_MODEL}\n", "", 1)
+        .replace(f"Zweiter Review mit {_RECORD_MODEL}\n", "", 1)
     )
-    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+    assert validate_visible(body, payload["passes"]) == [
+        "review title model missing",
+        "review visible text missing",
+    ]
 
 
 def test_second_run_ready_lines_as_summary_are_visible_text_missing() -> None:
@@ -273,15 +334,167 @@ def test_second_run_ready_lines_as_summary_are_visible_text_missing() -> None:
     passes = payload["passes"]
     body = (
         _body(payload, passes=passes)
-        .replace("The change is covered.", f"Ready after {passes} review passes.", 1)
         .replace(
-            "Die Änderung ist abgedeckt.",
-            f"Bereit nach {passes} Review-Durchläufen.",
+            "No defects.\n",
+            f"No defects.\nReady after {passes} review passes.\n",
+            1,
+        )
+        .replace(
+            "Keine Mängel.\n",
+            f"Keine Mängel.\nBereit nach {passes} Review-Durchläufen.\n",
             1,
         )
     )
-    assert "Second review after" in body
-    assert "Zweiter Review nach" in body
+    assert "No defects." in body
+    assert "Keine Mängel." in body
+    assert validate_visible(body, passes) == ["review visible text missing"]
+
+
+def _v2_lane(lane_id: str) -> dict:
+    return {
+        "id": lane_id,
+        "result": "pass",
+        "status": "complete",
+        "provider": _RECORD_PROVIDER,
+        "model": _RECORD_MODEL,
+        "model_number": _RECORD_NUMBER,
+        "prompt": _RECORD_PROMPT,
+    }
+
+
+def _v2_second(*, blocks_merge: bool, defects: int) -> dict:
+    return {
+        "schema": "a38-review/v2",
+        "head": HEAD,
+        "passes": 1,
+        "defects": defects,
+        "set_aside": "none",
+        "blocks_merge": blocks_merge,
+        "lanes": [_v2_lane("conformity-b"), _v2_lane("logic-b")],
+    }
+
+
+def test_second_run_non_blocking_defects_are_visible() -> None:
+    payload = _v2_second(blocks_merge=False, defects=2)
+    body = _body(payload, passes=1)
+    assert "There are defects that do not block the merge." in body
+    assert "Es gibt Mängel, die den Merge nicht blockieren." in body
+    assert "They do not block the merge." not in body
+    assert validate_visible(body, payload["passes"]) == []
+    assert validate_declaration(payload, head=HEAD, markdown_only=False) == []
+    assert validate_review_record(body, payload) == []
+
+
+def test_second_run_blocking_defects_are_visible() -> None:
+    payload = _v2_second(blocks_merge=True, defects=1)
+    body = _body(payload, passes=1)
+    assert "There are defects that must be fixed." in body
+    assert "Es gibt Mängel, die behoben werden müssen." in body
+    assert validate_visible(body, payload["passes"]) == []
+    assert validate_declaration(payload, head=HEAD, markdown_only=False) == []
+
+
+def test_second_run_blocking_flag_without_a_count_is_rejected() -> None:
+    payload = _v2_second(blocks_merge=True, defects=0)
+    assert "review blocking defects must be counted" in validate_declaration(
+        payload, head=HEAD, markdown_only=False
+    )
+    assert validate_visible(_body(payload, passes=1), payload["passes"]) == [
+        "review visible text missing"
+    ]
+
+
+def test_second_run_v2_without_blocks_merge_is_rejected() -> None:
+    payload = _v2_second(blocks_merge=False, defects=0)
+    del payload["blocks_merge"]
+    assert "review blocks_merge missing" in validate_declaration(
+        payload, head=HEAD, markdown_only=False
+    )
+    assert validate_visible(_body(payload, passes=1), payload["passes"]) == [
+        "review visible text missing"
+    ]
+
+
+def test_second_run_string_flag_is_not_a_boolean() -> None:
+    payload = _v2_second(blocks_merge=True, defects=2)
+    payload["blocks_merge"] = "true"
+    reasons = validate_declaration(payload, head=HEAD, markdown_only=False)
+    assert "review blocks_merge must be a boolean" in reasons
+    assert validate_visible(_body(payload, passes=1), payload["passes"]) == [
+        "review visible text missing"
+    ]
+
+
+def test_first_run_rejects_blocks_merge() -> None:
+    payload = _v2_second(blocks_merge=True, defects=1)
+    payload["lanes"] = [_v2_lane("conformity-a"), _v2_lane("logic-a")]
+    reasons = validate_declaration(payload, head=HEAD, markdown_only=False)
+    assert "review blocks_merge is only for the second run" in reasons
+    assert "review defects must be 0" in reasons
+
+
+def test_second_run_old_defect_pair_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("b"))
+    body = (
+        _body(payload)
+        .replace("No defects.\n", "There are defects.\nThey do not block the merge.\n", 1)
+        .replace("Keine Mängel.\n", "Es gibt Mängel.\nSie blockieren den Merge nicht.\n", 1)
+    )
+    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+
+
+def test_second_run_old_combined_sentence_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("b"))
+    body = (
+        _body(payload)
+        .replace("No defects.", "No defects, and nothing in this review blocks the merge.", 1)
+        .replace(
+            "Keine Mängel.",
+            "Keine Mängel, und nichts aus diesem Review blockiert den Merge.",
+            1,
+        )
+    )
+    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+
+
+def test_second_run_mixed_pair_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("b"))
+    body = _body(payload).replace(
+        "No defects.",
+        "There are defects that do not block the merge.",
+        1,
+    )
+    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+
+
+def test_second_run_no_defect_merge_sentence_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("b"))
+    between = (
+        _body(payload)
+        .replace("No defects.\n", "No defects.\nNothing in this review blocks the merge.\n", 1)
+        .replace(
+            "Keine Mängel.\n",
+            "Keine Mängel.\nNichts aus diesem Review blockiert den Merge.\n",
+            1,
+        )
+    )
+    assert validate_visible(between, payload["passes"]) == ["review visible text missing"]
+    trailing = _body(payload).replace(
+        "Keine Mängel.\n",
+        "Keine Mängel.\nNothing in this review blocks the merge.\n",
+        1,
+    )
+    assert validate_visible(trailing, payload["passes"]) == ["review visible text missing"]
+
+
+def test_second_run_pass_count_line_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("b"))
+    passes = payload["passes"]
+    body = _body(payload).replace(
+        "Keine Mängel.\n",
+        f"Keine Mängel.\nSecond review after {passes} review passes.\n",
+        1,
+    )
     assert validate_visible(body, passes) == ["review visible text missing"]
 
 
@@ -291,26 +504,26 @@ def test_second_run_ready_lines_with_second_review_title_are_visible_text_missin
     body = (
         _body(payload)
         .replace(
-            f"Second review after {passes} review passes.",
+            "No defects.",
             f"Ready after {passes} review passes.",
             1,
         )
         .replace(
-            f"Zweiter Review nach {passes} Review-Durchläufen.",
+            "Keine Mängel.",
             f"Bereit nach {passes} Review-Durchläufen.",
             1,
         )
     )
-    assert "Second review\n" in body
-    assert "Zweiter Review\n" in body
+    assert f"Second review with {_RECORD_MODEL}\n" in body
+    assert f"Zweiter Review mit {_RECORD_MODEL}\n" in body
     assert validate_visible(body, passes) == ["review visible text missing"]
 
 
 def test_both_runs_first_review_title_passes_visible() -> None:
     payload = _pass_payload()
     body = _body(payload)
-    assert "First review\n" in body
-    assert "Erster Review\n" in body
+    assert f"First review with {_RECORD_MODEL}\n" in body
+    assert f"Erster Review mit {_RECORD_MODEL}\n" in body
     assert f"Ready after {payload['passes']} review passes." in body
     assert validate_visible(body, payload["passes"]) == []
     assert "review runs must be separate comments" in validate_declaration(
@@ -588,7 +801,10 @@ def test_review_record_requires_prompt_model_and_set_aside() -> None:
         f"{REVIEW_BEGIN}\n```json\n{json.dumps(payload)}\n```\n{REVIEW_END}\n"
     )
     assert validate_review_record(bare, payload) == ["review record missing"]
-    assert validate_visible(bare, 2) == []
+    assert validate_visible(bare, 2) == [
+        "review title model missing",
+        "review visible text missing",
+    ]
     without_prompt_label = "\n".join(
         line for line in _body(payload).splitlines() if not line.startswith("Prompt:")
     ) + "\n"
@@ -629,6 +845,8 @@ def test_one_run_record_and_na_lane_shape() -> None:
     na["lanes"] = _run("a", result="n_a", evidence=evidence)
     na_body = _body(na)
     assert validate_review_record(na_body, na) == []
+    assert "First review with" not in na_body
+    assert validate_visible(na_body, na["passes"]) == []
     named = na_body.replace(
         "Lane `conformity-a`:\nResult: n_a\n",
         "Lane `conformity-a`:\nProvider: Acme\nResult: n_a\n",
@@ -1277,18 +1495,18 @@ def test_select_only_second_run_is_missing() -> None:
     assert reasons == ["review completion comment missing"]
 
 
-def test_select_only_second_run_ready_lines_is_visible_text_missing() -> None:
+def test_select_only_a_malformed_second_run_is_completion_missing() -> None:
     payload = _pass_payload(lanes=_run("b"))
     passes = payload["passes"]
     body = (
         _body(payload)
         .replace(
-            f"Second review after {passes} review passes.",
+            "No defects.",
             f"Ready after {passes} review passes.",
             1,
         )
         .replace(
-            f"Zweiter Review nach {passes} Review-Durchläufen.",
+            "Keine Mängel.",
             f"Bereit nach {passes} Review-Durchläufen.",
             1,
         )
@@ -1296,7 +1514,73 @@ def test_select_only_second_run_ready_lines_is_visible_text_missing() -> None:
     second = _comment(body, cid=1, user=10)
     chosen, reasons = _select([second])
     assert chosen is None
-    assert reasons == ["review visible text missing"]
+    assert reasons == ["review completion comment missing"]
+
+
+def test_select_rejects_a_first_review_without_the_title_model() -> None:
+    body = (
+        _body(_pass_payload(lanes=_run("a")))
+        .replace(f"First review with {_RECORD_MODEL}", "First review", 1)
+        .replace(f"Erster Review mit {_RECORD_MODEL}", "Erster Review", 1)
+    )
+    chosen, reasons = _select([_comment(body, cid=1, user=10)])
+    assert chosen is None
+    assert reasons == ["review title model missing", "review visible text missing"]
+
+
+def test_select_accepts_a_model_name_it_does_not_judge() -> None:
+    body = _body(_pass_payload(lanes=_run("a"))).replace(_RECORD_MODEL, "Grok 4.7")
+    chosen, reasons = _select([_comment(body, cid=1, user=10)])
+    assert reasons == []
+    assert chosen is not None
+    codex = _body(_pass_payload(lanes=_run("b"))).replace(_RECORD_MODEL, "Codex Astra 6")
+    assert validate_visible(codex, 2) == []
+
+
+def test_select_a_sloppy_second_run_does_not_hide_the_first_runs_missing_model() -> None:
+    first_body = (
+        _body(_pass_payload(lanes=_run("a")))
+        .replace(f"First review with {_RECORD_MODEL}", "First review", 1)
+        .replace(f"Erster Review mit {_RECORD_MODEL}", "Erster Review", 1)
+    )
+    first = _comment(first_body, cid=1, user=10, created="2026-09-01T00:00:00Z")
+    second_payload = _pass_payload(lanes=_run("b"))
+    passes = second_payload["passes"]
+    second = _comment(
+        _body(second_payload)
+        .replace("No defects.", f"Ready after {passes} review passes.", 1)
+        .replace("Keine Mängel.", f"Bereit nach {passes} Review-Durchläufen.", 1),
+        cid=2,
+        user=10,
+        created="2026-09-02T00:00:00Z",
+    )
+    chosen, reasons = _select([first, second])
+    assert chosen is None
+    assert "review title model missing" in reasons
+
+
+def test_a_placeholder_title_is_not_a_model() -> None:
+    body = (
+        _body(_pass_payload(lanes=_run("a")))
+        .replace(f"First review with {_RECORD_MODEL}", "First review with example model", 1)
+        .replace(f"Erster Review mit {_RECORD_MODEL}", "Erster Review mit example model", 1)
+    )
+    assert validate_visible(body, 2) == [
+        "review title model missing",
+        "review visible text missing",
+    ]
+
+
+def test_titles_that_name_different_models_are_missing() -> None:
+    body = _body(_pass_payload(lanes=_run("a"))).replace(
+        f"Erster Review mit {_RECORD_MODEL}",
+        "Erster Review mit Codex Astra 6",
+        1,
+    )
+    assert validate_visible(body, 2) == [
+        "review title model missing",
+        "review visible text missing",
+    ]
 
 
 def test_select_first_run_when_newer_second_run_says_ready() -> None:
@@ -1308,12 +1592,12 @@ def test_select_first_run_when_newer_second_run_says_ready() -> None:
     ready_second = _comment(
         _body(payload)
         .replace(
-            f"Second review after {passes} review passes.",
+            "No defects.",
             f"Ready after {passes} review passes.",
             1,
         )
         .replace(
-            f"Zweiter Review nach {passes} Review-Durchläufen.",
+            "Keine Mängel.",
             f"Bereit nach {passes} Review-Durchläufen.",
             1,
         ),
@@ -1621,6 +1905,166 @@ def _gate(api: _GateApi, comments: list[dict]) -> tuple[bool, list[str]]:
 
 def _ahead() -> tuple[int, dict[str, int | str], dict]:
     return 200, {"status": "ahead", "ahead_by": 1, "behind_by": 0}, {}
+
+
+def _gate_api() -> _GateApi:
+    return _GateApi({BASE: "2026-07-01T00:00:00Z", HEAD: "2026-09-01T00:00:00Z"})
+
+
+def _first_run_comment() -> dict:
+    return _comment(
+        _body(_pass_payload(lanes=_run("a"))),
+        cid=1,
+        user=10,
+        created="2026-09-02T00:00:00Z",
+    )
+
+
+def _second_run_comment(
+    payload: dict, *, cid: int, created: str
+) -> dict:
+    return _comment(_body(payload, passes=payload["passes"]), cid=cid, user=10, created=created)
+
+
+def test_gate_drafts_when_the_second_run_blocks_the_merge() -> None:
+    second = _second_run_comment(
+        _v2_second(blocks_merge=True, defects=2),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
+    assert ok is False
+    assert reasons == [BLOCKING_REVIEW_REASON]
+
+
+def test_gate_keeps_ready_when_second_run_defects_do_not_block() -> None:
+    second = _second_run_comment(
+        _v2_second(blocks_merge=False, defects=2),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
+    assert ok is True
+    assert reasons == []
+
+
+def test_gate_a_later_clear_second_run_drops_an_older_block() -> None:
+    blocked = _second_run_comment(
+        _v2_second(blocks_merge=True, defects=1),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    cleared = _second_run_comment(
+        _v2_second(blocks_merge=False, defects=0),
+        cid=3,
+        created="2026-09-04T00:00:00Z",
+    )
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), blocked, cleared])
+    assert ok is True
+    assert reasons == []
+
+
+def test_gate_true_without_a_count_does_not_draft() -> None:
+    second = _second_run_comment(
+        _v2_second(blocks_merge=True, defects=0),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
+    assert ok is True
+    assert reasons == []
+
+
+def test_gate_a_sentence_that_disagrees_does_not_draft() -> None:
+    payload = _v2_second(blocks_merge=True, defects=2)
+    body = (
+        _body(payload, passes=1)
+        .replace("There are defects that must be fixed.", "No defects.", 1)
+        .replace("Es gibt Mängel, die behoben werden müssen.", "Keine Mängel.", 1)
+    )
+    second = _comment(body, cid=2, user=10, created="2026-09-03T00:00:00Z")
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
+    assert ok is True
+    assert reasons == []
+
+
+def test_gate_a_disagreeing_newer_comment_does_not_clear_a_block() -> None:
+    blocked = _second_run_comment(
+        _v2_second(blocks_merge=True, defects=2),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    newer_payload = _v2_second(blocks_merge=False, defects=0)
+    newer = _comment(
+        _body(newer_payload, passes=1)
+        .replace("No defects.", "There are defects that must be fixed.", 1)
+        .replace("Keine Mängel.", "Es gibt Mängel, die behoben werden müssen.", 1),
+        cid=3,
+        user=10,
+        created="2026-09-04T00:00:00Z",
+    )
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), blocked, newer])
+    assert ok is False
+    assert reasons == [BLOCKING_REVIEW_REASON]
+
+
+def test_a_model_line_inside_the_prompt_fence_still_blocks() -> None:
+    payload = _v2_second(blocks_merge=True, defects=2)
+    for lane in payload["lanes"]:
+        lane["prompt"] = _RECORD_PROMPT + "\n```python\nModel: not a lane label"
+    body = _body(payload, passes=1)
+    assert "Model: not a lane label" in body
+    assert validate_visible(body, 1) == []
+    assert validate_review_record(body, payload) == []
+    second = _comment(body, cid=2, user=10, created="2026-09-03T00:00:00Z")
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
+    assert ok is False
+    assert reasons == [BLOCKING_REVIEW_REASON]
+
+
+def test_gate_a_second_run_without_the_title_model_is_not_a_signal() -> None:
+    payload = _v2_second(blocks_merge=True, defects=2)
+    body = (
+        _body(payload, passes=1)
+        .replace(f"Second review with {_RECORD_MODEL}", "Second review", 1)
+        .replace(f"Zweiter Review mit {_RECORD_MODEL}", "Zweiter Review", 1)
+    )
+    second = _comment(body, cid=2, user=10, created="2026-09-03T00:00:00Z")
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
+    assert ok is True
+    assert reasons == []
+
+
+def test_gate_a_broken_newer_second_run_does_not_clear_a_block() -> None:
+    blocked = _second_run_comment(
+        _v2_second(blocks_merge=True, defects=2),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    broken_payload = _v2_second(blocks_merge=True, defects=2)
+    broken_payload["blocks_merge"] = "true"
+    string_flag = _second_run_comment(
+        broken_payload, cid=3, created="2026-09-04T00:00:00Z"
+    )
+    missing = _v2_second(blocks_merge=False, defects=0)
+    del missing["blocks_merge"]
+    missing_flag = _second_run_comment(
+        missing, cid=4, created="2026-09-05T00:00:00Z"
+    )
+    unreadable = _second_run_comment(
+        _v2_second(blocks_merge=False, defects=0),
+        cid=5,
+        created="2026-09-06T00:00:00Z",
+    )
+    unreadable["body"] = unreadable["body"].replace(
+        '"blocks_merge": false', '"blocks_merge": ', 1
+    )
+    ok, reasons = _gate(
+        _gate_api(),
+        [_first_run_comment(), blocked, string_flag, missing_flag, unreadable],
+    )
+    assert ok is False
+    assert reasons == [BLOCKING_REVIEW_REASON]
 
 
 def test_gate_keeps_a_review_of_a_commit_still_in_the_pull_request() -> None:

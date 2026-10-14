@@ -34,6 +34,7 @@ from typing import Any, Mapping, Sequence
 REVIEW_BEGIN = "<!-- A38-REVIEW:v1 -->"
 REVIEW_END = "<!-- /A38-REVIEW:v1 -->"
 LIFECYCLE_REASON = "Review completion missing"
+BLOCKING_REVIEW_REASON = "Review defects block the merge"
 # One full run is conformity plus logic of the same suffix. The other run is optional.
 RUNS = (
     ("conformity-a", "logic-a"),
@@ -49,7 +50,7 @@ _PASS_KEYS = frozenset({"id", "result", "status"})
 _PASS_KEYS_V2 = _PASS_KEYS | {"provider", "model", "model_number", "prompt"}
 _NA_KEYS = frozenset({"id", "result", "evidence"})
 _OBJECT_KEYS = frozenset({"schema", "head", "passes", "defects", "lanes"})
-_OBJECT_KEYS_V2 = _OBJECT_KEYS | {"set_aside"}
+_OBJECT_KEYS_V2 = _OBJECT_KEYS | {"set_aside", "blocks_merge"}
 _SCHEMA_V2 = "a38-review/v2"
 # Reminder given to every pass lane when the base revision has REVIEW.md.
 # Extra sentences may follow. This is not a proof that a model obeyed it.
@@ -133,25 +134,257 @@ def _add(reasons: list[str], text: str) -> None:
         reasons.append(text)
 
 
-def validate_visible(body: str, passes: int) -> list[str]:
-    if not isinstance(body, str) or not _is_int(passes) or passes < 1:
-        return ["review visible text missing"]
-    if _lane_ids_of(body) == set(RUNS[1]):
-        en_title = "Second review"
-        de_title = "Zweiter Review"
-        en_sentence = f"Second review after {passes} review passes."
-        de_sentence = f"Zweiter Review nach {passes} Review-Durchläufen."
-    else:
-        en_title = "First review"
-        de_title = "Erster Review"
-        en_sentence = f"Ready after {passes} review passes."
-        de_sentence = f"Bereit nach {passes} Review-Durchläufen."
+# The second review uses one sentence. The JSON boolean blocks_merge and
+# the defect count pick which sentence. A pass-count line is none of them.
+_NO_DEFECTS = (("No defects.",), ("Keine Mängel.",))
+_NON_BLOCKING = (
+    ("There are defects that do not block the merge.",),
+    ("Es gibt Mängel, die den Merge nicht blockieren.",),
+)
+_BLOCKING = (
+    ("There are defects that must be fixed.",),
+    ("Es gibt Mängel, die behoben werden müssen.",),
+)
+
+
+def _visible_lines(body: str) -> list[str]:
     begin = body.find(REVIEW_BEGIN)
     end = body.find(REVIEW_END)
     visible = body
     if 0 <= begin < end:
-        visible = body[:begin] + body[end + len(REVIEW_END) :]
-    lines = visible.splitlines()
+        visible = body[: begin] + body[end + len(REVIEW_END) :]
+    return visible.splitlines()
+
+
+def _prefix_matches(lines: list[str], expected: tuple[str, ...]) -> bool:
+    """Required lines in order. Blank lines may separate them; other text may not."""
+    position = 0
+    for want in expected:
+        found = -1
+        for index in range(position, len(lines)):
+            if lines[index].strip():
+                found = index
+                break
+        if found < 0 or lines[found] != want:
+            return False
+        position = found + 1
+    return True
+
+
+def _second_sentences(
+    payload: Mapping[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """The one sentence each language must show for this second-run payload."""
+    defects = payload.get("defects")
+    if not _is_int(defects):
+        return None
+    # A v1 second run can only say that it found no defects. v2 must name
+    # the boolean; a missing or non-boolean flag is not one of the sentences.
+    if payload.get("schema") != _SCHEMA_V2:
+        if defects == 0 and "blocks_merge" not in payload:
+            return _NO_DEFECTS
+        return None
+    blocks = payload.get("blocks_merge")
+    if type(blocks) is not bool:
+        return None
+    if blocks and defects >= 1:
+        return _BLOCKING
+    if not blocks and defects == 0:
+        return _NO_DEFECTS
+    if not blocks and defects >= 1:
+        return _NON_BLOCKING
+    return None
+
+
+def _review_titles(kind: str, model: str | None) -> tuple[str, str]:
+    """Title lines. A pass run names the model. An n_a run does not."""
+    en, de = ("Second review", "Zweiter Review") if kind == "second" else ("First review", "Erster Review")
+    if not model:
+        return en, de
+    return f"{en} with {model}", f"{de} mit {model}"
+
+
+def _title_model(body: str) -> tuple[bool, str | None]:
+    """Whether this comment must name one model, and that model.
+
+    An n_a-only run names no model. Every pass lane must have one Model
+    line, and those lines must all be the same text. A model in the JSON,
+    when a lane has one, must be that same text.
+    """
+    try:
+        payload = parse_review_block(body)
+    except ReviewError:
+        return True, None
+    lanes = payload.get("lanes")
+    if not isinstance(lanes, list) or not lanes:
+        return True, None
+    pass_ids: list[str] = []
+    for lane in lanes:
+        if not isinstance(lane, Mapping):
+            return True, None
+        lane_id = lane.get("id")
+        result = lane.get("result")
+        if not isinstance(lane_id, str):
+            return True, None
+        if result == "n_a":
+            continue
+        if result != "pass":
+            return True, None
+        pass_ids.append(lane_id)
+    if not pass_ids:
+        return False, None
+    found: dict[str, str] = {}
+    current: str | None = None
+    in_fence = False
+    for line in _visible_lines(body):
+        # Same fence rule as _record_items: an opening line may carry
+        # an info string, and only a bare closing fence ends the body.
+        # A line such as ```python inside the prompt must not flip this
+        # and hide the next lane's Model line.
+        stripped = line.strip()
+        if not in_fence and stripped.startswith("```"):
+            in_fence = True
+            continue
+        if in_fence and stripped == "```":
+            in_fence = False
+            continue
+        if in_fence:
+            continue
+        match = _LANE_HEADER.match(line)
+        if match:
+            current = match.group(1)
+            continue
+        if current not in pass_ids or not _starts_with_label(line, "Model"):
+            continue
+        value = _plain(line.split(":", 1)[1])
+        if not value or current in found:
+            return True, None
+        found[current] = value
+    if any(lane_id not in found for lane_id in pass_ids):
+        return True, None
+    models = {found[lane_id] for lane_id in pass_ids}
+    if len(models) != 1:
+        return True, None
+    model = next(iter(models))
+    for lane in lanes:
+        if not isinstance(lane, Mapping) or lane.get("id") not in pass_ids:
+            continue
+        named = lane.get("model")
+        if isinstance(named, str) and named.strip() and named.strip() != model:
+            return True, None
+    return True, model
+
+
+def _leading_titles(lines: list[str]) -> tuple[str | None, str | None]:
+    """The first content line after ``EN:`` and the first after ``DE:``."""
+    en_title: str | None = None
+    de_title: str | None = None
+    seen_en = False
+    take_en = False
+    take_de = False
+    for line in lines:
+        if not seen_en:
+            if line == "EN:":
+                seen_en = True
+                take_en = True
+            continue
+        if take_en:
+            if not line.strip():
+                continue
+            en_title = line
+            take_en = False
+            continue
+        if line == "DE:":
+            take_de = True
+            continue
+        if take_de:
+            if not line.strip():
+                continue
+            de_title = line
+            break
+    return en_title, de_title
+
+
+def _title_model_text(title: str | None, prefix: str) -> str | None:
+    if not isinstance(title, str) or not title.startswith(prefix):
+        return None
+    model = title[len(prefix) :].strip()
+    if not _named_value(model):
+        return None
+    return model
+
+
+def _stated_title_model(lines: list[str], kind: str) -> str | None:
+    """One model named by both titles, or None when that fact is absent.
+
+    The guard does not judge the name and does not keep a list of models.
+    Both titles must carry the same non-empty text. A placeholder is absent.
+    """
+    en_title, de_title = _leading_titles(lines)
+    if kind == "second":
+        en_prefix, de_prefix = "Second review with ", "Zweiter Review mit "
+    else:
+        en_prefix, de_prefix = "First review with ", "Erster Review mit "
+    en_model = _title_model_text(en_title, en_prefix)
+    de_model = _title_model_text(de_title, de_prefix)
+    if en_model is None or en_model != de_model:
+        return None
+    return en_model
+
+
+def validate_visible(body: str, passes: int) -> list[str]:
+    if not isinstance(body, str) or not _is_int(passes) or passes < 1:
+        return ["review visible text missing"]
+    lines = _visible_lines(body)
+    required, model = _title_model(body)
+    kind = "second" if _lane_ids_of(body) == set(RUNS[1]) else "first"
+    reasons: list[str] = []
+    # A pass run must name one model in both titles. An n_a run must not.
+    # The second run stays optional: this rejects a comment that was posted,
+    # and a missing second-run comment never reaches this check.
+    if required and _stated_title_model(lines, kind) is None:
+        _add(reasons, "review title model missing")
+
+    def fail() -> list[str]:
+        _add(reasons, "review visible text missing")
+        return reasons
+
+    if required and not model:
+        return fail()
+    if _lane_ids_of(body) == set(RUNS[1]):
+        try:
+            second_payload = parse_review_block(body)
+        except ReviewError:
+            return fail()
+        pair = _second_sentences(second_payload)
+        if pair is None:
+            return fail()
+        en_lines, de_lines = pair
+        en_title, de_title = _review_titles("second", model)
+        if not _prefix_matches(
+            lines, ("EN:", en_title, *en_lines, "DE:", de_title, *de_lines)
+        ):
+            return fail()
+        # Ready lines are the first run. The pass-count lines are neither run.
+        # The old two-line defect pair is not a second-run sentence.
+        banned = (
+            f"Ready after {passes} review passes.",
+            f"Bereit nach {passes} Review-Durchläufen.",
+            f"Second review after {passes} review passes.",
+            f"Zweiter Review nach {passes} Review-Durchläufen.",
+            "Nothing in this review blocks the merge.",
+            "Nichts aus diesem Review blockiert den Merge.",
+            "There are defects.",
+            "They do not block the merge.",
+            "Es gibt Mängel.",
+            "Sie blockieren den Merge nicht.",
+        )
+        if any(line in banned for line in lines):
+            return fail()
+        return reasons
+    en_title, de_title = _review_titles("first", model)
+    en_sentence = f"Ready after {passes} review passes."
+    de_sentence = f"Bereit nach {passes} Review-Durchläufen."
 
     def next_content(start: int) -> int:
         """Next non-blank line. Blank lines may separate the required lines; other text may not."""
@@ -177,19 +410,8 @@ def validate_visible(body: str, passes: int) -> list[str]:
         de_sentence_at = -1
     de_summary = next_content(de_sentence_at + 1) if de_sentence_at >= 0 else -1
     if min(en_at, title_at, ready_at, summary_at, de_at, de_title_at, de_sentence_at, de_summary) < 0:
-        return ["review visible text missing"]
-    # The ready sentences belong only to the first run. A second-run comment
-    # that still uses them, including as the summary, is not a declaration.
-    if en_title == "Second review" and any(
-        line
-        in (
-            f"Ready after {passes} review passes.",
-            f"Bereit nach {passes} Review-Durchläufen.",
-        )
-        for line in lines
-    ):
-        return ["review visible text missing"]
-    return []
+        return fail()
+    return reasons
 
 
 def _pass_lane_complete(lane: Mapping[str, Any], *, rules_bound: bool) -> bool:
@@ -299,6 +521,43 @@ def _validate_lanes(
     return reasons
 
 
+def _payload_is_second_run(payload: Mapping[str, Any]) -> bool:
+    lanes = payload.get("lanes")
+    if not isinstance(lanes, list):
+        return False
+    ids = {
+        lane.get("id")
+        for lane in lanes
+        if isinstance(lane, Mapping) and isinstance(lane.get("id"), str)
+    }
+    return ids == set(RUNS[1])
+
+
+def _defect_reasons(payload: Mapping[str, Any]) -> list[str]:
+    """First run: zero defects. Second run: blocks_merge decides the count."""
+    reasons: list[str] = []
+    defects = payload.get("defects")
+    second = _payload_is_second_run(payload)
+    has_flag = "blocks_merge" in payload
+    flag = payload.get("blocks_merge")
+    if has_flag and type(flag) is not bool:
+        _add(reasons, "review blocks_merge must be a boolean")
+    if second and payload.get("schema") == _SCHEMA_V2:
+        if not has_flag:
+            _add(reasons, "review blocks_merge missing")
+        elif flag is True:
+            if not _is_int(defects) or defects < 1:
+                _add(reasons, "review blocking defects must be counted")
+        elif flag is False:
+            if not _is_int(defects) or defects < 0:
+                _add(reasons, "review defects must be an integer >= 0")
+    elif not _is_int(defects) or defects != 0:
+        _add(reasons, "review defects must be 0")
+    if has_flag and not second:
+        _add(reasons, "review blocks_merge is only for the second run")
+    return reasons
+
+
 def validate_declaration(
     payload: Mapping[str, Any],
     *,
@@ -335,8 +594,7 @@ def validate_declaration(
     passes = payload.get("passes")
     if not _is_int(passes) or passes < 1:
         _add(reasons, "review passes must be an integer >= 1")
-    if payload.get("defects") != 0 or not _is_int(payload.get("defects")):
-        _add(reasons, "review defects must be 0")
+    reasons.extend(_defect_reasons(payload))
     lanes = payload.get("lanes")
     if not isinstance(lanes, list):
         _add(reasons, "review lanes missing")
@@ -468,7 +726,9 @@ def render_review_record(payload: Mapping[str, Any], *, rules_bound: bool = True
         else:
             raise ReviewError("review pass lane is malformed")
         lines.append("")
-    lines.append(f"Final result: `passes` {payload.get('passes')}, `defects` 0.")
+    lines.append(
+        f"Final result: `passes` {payload.get('passes')}, `defects` {payload.get('defects')}."
+    )
     aside = payload.get("set_aside")
     lines.append(
         f"Set aside: {aside}" if isinstance(aside, str) and aside.strip() else "Set aside: none."
@@ -803,8 +1063,8 @@ def _same_count(left: re.Match[str], right: re.Match[str]) -> bool:
     return left.start(1) == right.start(1) and left.end(1) == right.end(1)
 
 
-def _final_result_ok(line: str, passes: object) -> bool:
-    if not _is_int(passes):
+def _final_result_ok(line: str, passes: object, defects: object = 0) -> bool:
+    if not _is_int(passes) or not _is_int(defects):
         return False
     if not _starts_with_label(line, "Final result"):
         return False
@@ -849,11 +1109,11 @@ def _final_result_ok(line: str, passes: object) -> bool:
             good_defects.append(number)
     if not good_passes or any(number != passes for number in good_passes):
         return False
-    if not good_defects or any(number != 0 for number in good_defects):
+    if not good_defects or any(number != defects for number in good_defects):
         return False
     if any(number == passes for number in negated_passes):
         return False
-    if any(number == 0 for number in negated_defects):
+    if any(number == defects for number in negated_defects):
         return False
     return True
 
@@ -924,8 +1184,9 @@ def validate_review_record(
     if [lane_id for _, lane_id in headers] != lane_ids:
         _add(reasons, "review lane record missing")
     passes = payload.get("passes")
+    defects = payload.get("defects")
     finals = [line for line in lines if _starts_with_label(line, "Final result")]
-    if not finals or any(not _final_result_ok(line, passes) for line in finals):
+    if not finals or any(not _final_result_ok(line, passes, defects) for line in finals):
         _add(reasons, "review final result does not match")
     final_at = next(
         (index for index, line in enumerate(lines) if _starts_with_label(line, "Final result")),
@@ -1106,42 +1367,22 @@ def _declaration_reasons(
     return reasons
 
 
-def select_review_comment(
+def _review_candidates(
     comments: Sequence[Mapping[str, Any]],
     *,
     author_id: int,
     guard_user_id: int,
-    committed_at: str,
-    head: str,
-    markdown_only: bool,
-    rules_bound: bool = True,
-    covered_at: Mapping[str, str] | None = None,
-    ancestry_unavailable: Collection[str] | None = None,
-) -> tuple[Mapping[str, Any] | None, list[str]]:
-    """Newest valid first-run author declaration that still covers this head.
+    committed: datetime,
+    covered_at: Mapping[str, str] | None,
+    ancestry_unavailable: Collection[str] | None,
+) -> tuple[list[tuple[datetime, int, Mapping[str, Any], str | None]], bool]:
+    """Author review comments that are new enough to cover this head.
 
-    Age is ``created_at`` only. An edit does not make a comment newer; post a
-    new comment instead. Other comments do not remove an earlier valid
-    declaration. A newer malformed declaration falls back to an older valid one.
-    A later second-run comment is ignored and does not hide an older valid
-    first-run comment. A comment that also carries local-CI markers is skipped.
-
-    Without ``covered_at``, the declaration must name ``head`` and the comment
-    must be created after ``committed_at``. With ``covered_at``, each key is a
-    SHA the caller has proved is ``head`` or an ancestor of it, and the value
-    is that SHA's committer time. The comment must be created after the commit
-    it names, not after every later commit. A declared SHA that is not one of
-    those keys is ``review head does not match the pull request``, including
-    when the comment is older than the current head. ``ancestry_unavailable``
-    lists SHAs whose ancestry could not be read; those declarations fail closed.
+    The fourth item is a forced reason when ancestry cannot be read or the
+    declared head is not this pull request. ``mixed_after_head`` is true when
+    a comment carries both the review block and the local CI report.
     """
-    committed = _utc(committed_at)
-    if committed is None:
-        return None, ["review commit time unavailable"]
-    if covered_at is not None and _utc(covered_at.get(head, "")) is None:
-        return None, ["review commit time unavailable"]
     unavailable = frozenset(ancestry_unavailable or ())
-    covered_heads = frozenset(covered_at) if covered_at is not None else None
     candidates: list[tuple[datetime, int, Mapping[str, Any], str | None]] = []
     mixed_after_head = False
     for comment in comments:
@@ -1187,6 +1428,141 @@ def select_review_comment(
         if boundary is not None and stamp <= boundary:
             continue
         candidates.append((stamp, int(comment["id"]), comment, forced))
+    return candidates, mixed_after_head
+
+
+def _second_run_merge_signal(payload: Mapping[str, Any]) -> bool | None:
+    """True drafts, False clears, None is not a signal.
+
+    Only a JSON boolean counts. The string ``"true"`` does not. A true flag
+    without a counted defect does not draft and does not clear an older
+    signal. A v1 second run with ``defects`` 0 and no flag clears.
+    """
+    if not _payload_is_second_run(payload):
+        return None
+    defects = payload.get("defects")
+    if (
+        payload.get("schema") == "a38-review/v1"
+        and "blocks_merge" not in payload
+        and defects == 0
+    ):
+        return False
+    if payload.get("schema") != _SCHEMA_V2 or type(payload.get("blocks_merge")) is not bool:
+        return None
+    if payload.get("blocks_merge") is True and _is_int(defects) and defects >= 1:
+        return True
+    if payload.get("blocks_merge") is False and _is_int(defects) and defects >= 0:
+        return False
+    return None
+
+
+def newest_second_run_blocks_merge(
+    comments: Sequence[Mapping[str, Any]],
+    *,
+    author_id: int,
+    guard_user_id: int,
+    committed_at: str,
+    head: str,
+    covered_at: Mapping[str, str] | None = None,
+    ancestry_unavailable: Collection[str] | None = None,
+) -> bool:
+    """True when the newest well-formed second-run comment counts blocking defects.
+
+    The signal is boolean ``blocks_merge`` true together with ``defects`` >= 1.
+    The visible sentence must be the one that flag requires, and a pass run
+    must name one shared non-empty model in both titles. The guard does not
+    judge that name. A newer well-formed second-run comment with
+    ``blocks_merge`` false clears the draft. A comment that does not parse,
+    whose sentence does not match the flag, whose pass-run titles do not
+    name that model, or whose flag is not a boolean paired with a counted
+    defect, is skipped: it neither drafts nor clears. Absence of a
+    second-run comment is not a failure. This does not choose the completion
+    comment.
+    """
+    committed = _utc(committed_at)
+    if committed is None:
+        return False
+    if covered_at is not None and _utc(covered_at.get(head, "")) is None:
+        return False
+    candidates, _mixed = _review_candidates(
+        comments,
+        author_id=author_id,
+        guard_user_id=guard_user_id,
+        committed=committed,
+        covered_at=covered_at,
+        ancestry_unavailable=ancestry_unavailable,
+    )
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    for _stamp, _cid, comment, forced in candidates:
+        if forced:
+            continue
+        body = comment.get("body")
+        text = body if isinstance(body, str) else ""
+        if _lane_ids_of(text) != set(RUNS[1]):
+            continue
+        try:
+            payload = parse_review_block(text)
+        except ReviewError:
+            continue
+        signal = _second_run_merge_signal(payload)
+        if signal is None:
+            continue
+        # The sentence and the flag are one fact. A mismatch is not a signal.
+        passes = payload.get("passes")
+        if not _is_int(passes) or validate_visible(text, passes):
+            continue
+        return signal
+    return False
+
+
+def select_review_comment(
+    comments: Sequence[Mapping[str, Any]],
+    *,
+    author_id: int,
+    guard_user_id: int,
+    committed_at: str,
+    head: str,
+    markdown_only: bool,
+    rules_bound: bool = True,
+    covered_at: Mapping[str, str] | None = None,
+    ancestry_unavailable: Collection[str] | None = None,
+) -> tuple[Mapping[str, Any] | None, list[str]]:
+    """Newest valid first-run author declaration that still covers this head.
+
+    Age is ``created_at`` only. An edit does not make a comment newer; post a
+    new comment instead. Other comments do not remove an earlier valid
+    declaration. A newer malformed declaration falls back to an older valid one.
+    A later second-run comment is ignored for this choice and does not hide
+    an older valid first-run comment. It does not supply the completion
+    failure, well-formed or not. If it is the only review comment, the
+    result is ``review completion comment missing``. Blocking defects on
+    that later comment are a separate gate: they do not choose this
+    comment, and they still return Ready to Draft. A comment that also
+    carries local-CI markers is skipped.
+
+    Without ``covered_at``, the declaration must name ``head`` and the comment
+    must be created after ``committed_at``. With ``covered_at``, each key is a
+    SHA the caller has proved is ``head`` or an ancestor of it, and the value
+    is that SHA's committer time. The comment must be created after the commit
+    it names, not after every later commit. A declared SHA that is not one of
+    those keys is ``review head does not match the pull request``, including
+    when the comment is older than the current head. ``ancestry_unavailable``
+    lists SHAs whose ancestry could not be read; those declarations fail closed.
+    """
+    committed = _utc(committed_at)
+    if committed is None:
+        return None, ["review commit time unavailable"]
+    if covered_at is not None and _utc(covered_at.get(head, "")) is None:
+        return None, ["review commit time unavailable"]
+    covered_heads = frozenset(covered_at) if covered_at is not None else None
+    candidates, mixed_after_head = _review_candidates(
+        comments,
+        author_id=author_id,
+        guard_user_id=guard_user_id,
+        committed=committed,
+        covered_at=covered_at,
+        ancestry_unavailable=ancestry_unavailable,
+    )
     if not candidates:
         if mixed_after_head:
             return None, ["local CI report and review record must be separate comments"]
@@ -1196,6 +1572,10 @@ def select_review_comment(
     for _stamp, _cid, comment, forced in candidates:
         body = comment.get("body")
         text = body if isinstance(body, str) else ""
+        # The second run is optional. It never satisfies Ready and never
+        # supplies this failure, well-formed or not.
+        if _lane_ids_of(text) == set(RUNS[1]):
+            continue
         if forced:
             reasons = [forced]
         else:
@@ -1207,8 +1587,6 @@ def select_review_comment(
                 covered_heads=covered_heads,
             )
         if not reasons:
-            if _lane_ids_of(text) == set(RUNS[1]):
-                continue
             return comment, []
         if not newest_reasons:
             newest_reasons = reasons
@@ -1562,6 +1940,18 @@ def evaluate_review_gate(
             ancestry_unavailable=unread,
         )
         reasons.extend(selected)
+        # The completion comment stays the first run. A second run that
+        # counts blocking defects still returns Ready to Draft.
+        if newest_second_run_blocks_merge(
+            comments,
+            author_id=author_id,
+            guard_user_id=guard_id,
+            committed_at=committed_at,
+            head=head,
+            covered_at=covered,
+            ancestry_unavailable=unread,
+        ):
+            _add(reasons, BLOCKING_REVIEW_REASON)
     reasons.extend(_load_threads(api, repo, number))
     if reasons:
         return False, reasons
