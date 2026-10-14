@@ -479,12 +479,12 @@ class FakeAPI:
                     "user": {"id": AUTHOR_ID, "login": "author", "type": "User"},
                     "body": (
                         "EN:\n"
-                        "First review\n"
+                        "First review with Acme model\n"
                         "Ready after 1 review passes.\n"
                         "The change is covered.\n"
                         "\n"
                         "DE:\n"
-                        "Erster Review\n"
+                        "Erster Review mit Acme model\n"
                         "Bereit nach 1 Review-Durchläufen.\n"
                         "Die Änderung ist abgedeckt.\n"
                         "\n"

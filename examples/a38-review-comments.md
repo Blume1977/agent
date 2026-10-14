@@ -2,7 +2,7 @@
 
 Worked comments for the visible text in [docs/a38.md](../docs/a38.md). The no-defect comments are complete declarations. `validate_visible` also accepts the non-blocking defect pair, but an accepted declaration still has `defects` 0, so that pair is shown without a machine block. Defects that block the merge have no completion comment. This file is not a second specification.
 
-`EN:` comes first. Each label is its own line. Each language has a title and two sentences. A blank line separates the languages. The task sentence and the machine block stay in `<details>`.
+`EN:` comes first. Each label is its own line. Each language has a title and two sentences. A blank line separates the languages. The title of a pass run names the model, the same text in both languages: `First review with <model>` / `Erster Review mit <model>`, and `Second review with <model>` / `Zweiter Review mit <model>`. That text is the `Model` line of every pass lane in the comment. An `n_a` run names no model. The task sentence and the machine block stay in `<details>`.
 
 The head below is a placeholder. Use the current 40-hex head. When the base revision has no `REVIEW.md`, the prompts are the two sentences shown. When it has `REVIEW.md`, each prompt is the compliance sentence from the specification.
 
@@ -12,12 +12,12 @@ This is the comment Ready reads. Post it only when that run found no defects. `N
 
 ````
 EN:
-First review
+First review with Grok 4.7
 Ready after 2 review passes.
 The payment amount is checked against the invoice before it is sent.
 
 DE:
-Erster Review
+Erster Review mit Grok 4.7
 Bereit nach 2 Review-Durchläufen.
 Der Zahlungsbetrag wird vor dem Senden gegen die Rechnung geprüft.
 
@@ -27,18 +27,18 @@ Der Zahlungsbetrag wird vor dem Senden gegen die Rechnung geprüft.
 Head: `0123456789abcdef0123456789abcdef01234567`
 Runs: `conformity-a` with `logic-a`.
 Lane `conformity-a`:
-Provider: Acme
-Model: Acme model
-Model number: acme-1
+Provider: xAI
+Model: Grok 4.7
+Model number: grok-4.7
 Result: pass
 Prompt:
 ```text
 Review the complete PR diff for conformity with CONTRIBUTING.md.
 ```
 Lane `logic-a`:
-Provider: Acme
-Model: Acme model
-Model number: acme-1
+Provider: xAI
+Model: Grok 4.7
+Model number: grok-4.7
 Result: pass
 Prompt:
 ```text
@@ -49,7 +49,7 @@ Set aside: none.
 
 <!-- A38-REVIEW:v1 -->
 ```json
-{"schema":"a38-review/v2","head":"0123456789abcdef0123456789abcdef01234567","passes":2,"defects":0,"set_aside":"none","lanes":[{"id":"conformity-a","result":"pass","status":"complete","provider":"Acme","model":"Acme model","model_number":"acme-1","prompt":"Review the complete PR diff for conformity with CONTRIBUTING.md."},{"id":"logic-a","result":"pass","status":"complete","provider":"Acme","model":"Acme model","model_number":"acme-1","prompt":"Review the complete PR diff for logical correctness."}]}
+{"schema":"a38-review/v2","head":"0123456789abcdef0123456789abcdef01234567","passes":2,"defects":0,"set_aside":"none","lanes":[{"id":"conformity-a","result":"pass","status":"complete","provider":"xAI","model":"Grok 4.7","model_number":"grok-4.7","prompt":"Review the complete PR diff for conformity with CONTRIBUTING.md."},{"id":"logic-a","result":"pass","status":"complete","provider":"xAI","model":"Grok 4.7","model_number":"grok-4.7","prompt":"Review the complete PR diff for logical correctness."}]}
 ```
 <!-- /A38-REVIEW:v1 -->
 
@@ -62,12 +62,12 @@ A later comment. It does not satisfy Ready. The two sentences are this pair and 
 
 ````
 EN:
-Second review
+Second review with Codex Astra 6
 No defects.
 Nothing in this review blocks the merge.
 
 DE:
-Zweiter Review
+Zweiter Review mit Codex Astra 6
 Keine Mängel.
 Nichts aus diesem Review blockiert den Merge.
 
@@ -81,18 +81,18 @@ Der Zahlungsbetrag wird vor dem Senden gegen die Rechnung geprüft.
 Head: `0123456789abcdef0123456789abcdef01234567`
 Runs: `conformity-b` with `logic-b`. The second run may be omitted.
 Lane `conformity-b`:
-Provider: Acme
-Model: Acme model
-Model number: acme-1
+Provider: OpenAI
+Model: Codex Astra 6
+Model number: codex-astra-6
 Result: pass
 Prompt:
 ```text
 Review the complete PR diff for conformity with CONTRIBUTING.md.
 ```
 Lane `logic-b`:
-Provider: Acme
-Model: Acme model
-Model number: acme-1
+Provider: OpenAI
+Model: Codex Astra 6
+Model number: codex-astra-6
 Result: pass
 Prompt:
 ```text
@@ -103,7 +103,7 @@ Set aside: none.
 
 <!-- A38-REVIEW:v1 -->
 ```json
-{"schema":"a38-review/v2","head":"0123456789abcdef0123456789abcdef01234567","passes":1,"defects":0,"set_aside":"none","lanes":[{"id":"conformity-b","result":"pass","status":"complete","provider":"Acme","model":"Acme model","model_number":"acme-1","prompt":"Review the complete PR diff for conformity with CONTRIBUTING.md."},{"id":"logic-b","result":"pass","status":"complete","provider":"Acme","model":"Acme model","model_number":"acme-1","prompt":"Review the complete PR diff for logical correctness."}]}
+{"schema":"a38-review/v2","head":"0123456789abcdef0123456789abcdef01234567","passes":1,"defects":0,"set_aside":"none","lanes":[{"id":"conformity-b","result":"pass","status":"complete","provider":"OpenAI","model":"Codex Astra 6","model_number":"codex-astra-6","prompt":"Review the complete PR diff for conformity with CONTRIBUTING.md."},{"id":"logic-b","result":"pass","status":"complete","provider":"OpenAI","model":"Codex Astra 6","model_number":"codex-astra-6","prompt":"Review the complete PR diff for logical correctness."}]}
 ```
 <!-- /A38-REVIEW:v1 -->
 
@@ -118,12 +118,12 @@ An accepted declaration still has `defects` 0. Do not put that machine block und
 
 ```
 EN:
-Second review
+Second review with Codex Astra 6
 There are defects.
 They do not block the merge.
 
 DE:
-Zweiter Review
+Zweiter Review mit Codex Astra 6
 Es gibt Mängel.
 Sie blockieren den Merge nicht.
 

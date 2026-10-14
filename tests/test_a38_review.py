@@ -66,6 +66,25 @@ _RECORD_NUMBER = "acme-1"
 _RECORD_PROMPT = COMPLIANCE_PROMPT
 
 
+def _visible_model(payload: dict) -> str | None:
+    """Model the visible title names. Pass lanes without one use the record default."""
+    lanes = payload.get("lanes")
+    if not isinstance(lanes, list):
+        return None
+    models: list[str] = []
+    for lane in lanes:
+        if not isinstance(lane, dict) or lane.get("result") == "n_a":
+            continue
+        named = lane.get("model")
+        if isinstance(named, str) and named.strip():
+            models.append(named.strip())
+        else:
+            models.append(_RECORD_MODEL)
+    if not models or len(set(models)) != 1:
+        return None
+    return models[0]
+
+
 def _renderable(payload: dict) -> dict:
     """Facts the human record needs. A v1 payload must not carry them."""
     if payload.get("schema") == "a38-review/v2":
@@ -105,6 +124,10 @@ def _body(payload: dict, *, passes: int = 2) -> str:
         en_summary = "The change is covered."
         de_sentence = f"Bereit nach {passes} Review-Durchläufen."
         de_summary = "Die Änderung ist abgedeckt."
+    model = _visible_model(payload)
+    if model:
+        en_title = f"{en_title} with {model}"
+        de_title = f"{de_title} mit {model}"
     return (
         "EN:\n"
         f"{en_title}\n"
@@ -223,8 +246,8 @@ def test_first_run_second_review_lines_are_visible_text_missing() -> None:
 def test_first_run_first_review_title_is_visible() -> None:
     payload = _pass_payload(lanes=_run("a"))
     body = _body(payload)
-    assert "First review\n" in body
-    assert "Erster Review\n" in body
+    assert f"First review with {_RECORD_MODEL}\n" in body
+    assert f"Erster Review mit {_RECORD_MODEL}\n" in body
     assert validate_visible(body, payload["passes"]) == []
 
 
@@ -232,23 +255,43 @@ def test_first_run_second_review_title_is_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("a"))
     body = (
         _body(payload)
-        .replace("First review\n", "Second review\n", 1)
-        .replace("Erster Review\n", "Zweiter Review\n", 1)
+        .replace(f"First review with {_RECORD_MODEL}\n", f"Second review with {_RECORD_MODEL}\n", 1)
+        .replace(f"Erster Review mit {_RECORD_MODEL}\n", f"Zweiter Review mit {_RECORD_MODEL}\n", 1)
+    )
+    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+
+
+def test_title_model_must_match_the_recorded_model() -> None:
+    payload = _pass_payload(lanes=_run("a"))
+    body = _body(payload).replace("Model: Acme model\n", "Model: Other model\n", 1)
+    assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+
+
+def test_pass_run_without_the_model_in_the_title_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("a"))
+    body = (
+        _body(payload)
+        .replace(f"First review with {_RECORD_MODEL}", "First review", 1)
+        .replace(f"Erster Review mit {_RECORD_MODEL}", "Erster Review", 1)
     )
     assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
 
 
 def test_first_run_ready_lines_without_title_are_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("a"))
-    body = _body(payload).replace("First review\n", "", 1).replace("Erster Review\n", "", 1)
+    body = (
+        _body(payload)
+        .replace(f"First review with {_RECORD_MODEL}\n", "", 1)
+        .replace(f"Erster Review mit {_RECORD_MODEL}\n", "", 1)
+    )
     assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
 
 
 def test_second_run_second_review_title_is_visible() -> None:
     payload = _pass_payload(lanes=_run("b"))
     body = _body(payload)
-    assert "Second review\n" in body
-    assert "Zweiter Review\n" in body
+    assert f"Second review with {_RECORD_MODEL}\n" in body
+    assert f"Zweiter Review mit {_RECORD_MODEL}\n" in body
     assert validate_visible(body, payload["passes"]) == []
 
 
@@ -256,8 +299,8 @@ def test_second_run_first_review_title_is_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("b"))
     body = (
         _body(payload)
-        .replace("Second review\n", "First review\n", 1)
-        .replace("Zweiter Review\n", "Erster Review\n", 1)
+        .replace(f"Second review with {_RECORD_MODEL}\n", f"First review with {_RECORD_MODEL}\n", 1)
+        .replace(f"Zweiter Review mit {_RECORD_MODEL}\n", f"Erster Review mit {_RECORD_MODEL}\n", 1)
     )
     assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
 
@@ -266,8 +309,8 @@ def test_second_run_second_review_lines_without_title_are_visible_text_missing()
     payload = _pass_payload(lanes=_run("b"))
     body = (
         _body(payload)
-        .replace("Second review\n", "", 1)
-        .replace("Zweiter Review\n", "", 1)
+        .replace(f"Second review with {_RECORD_MODEL}\n", "", 1)
+        .replace(f"Zweiter Review mit {_RECORD_MODEL}\n", "", 1)
     )
     assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
 
@@ -369,16 +412,16 @@ def test_second_run_ready_lines_with_second_review_title_are_visible_text_missin
             1,
         )
     )
-    assert "Second review\n" in body
-    assert "Zweiter Review\n" in body
+    assert f"Second review with {_RECORD_MODEL}\n" in body
+    assert f"Zweiter Review mit {_RECORD_MODEL}\n" in body
     assert validate_visible(body, passes) == ["review visible text missing"]
 
 
 def test_both_runs_first_review_title_passes_visible() -> None:
     payload = _pass_payload()
     body = _body(payload)
-    assert "First review\n" in body
-    assert "Erster Review\n" in body
+    assert f"First review with {_RECORD_MODEL}\n" in body
+    assert f"Erster Review mit {_RECORD_MODEL}\n" in body
     assert f"Ready after {payload['passes']} review passes." in body
     assert validate_visible(body, payload["passes"]) == []
     assert "review runs must be separate comments" in validate_declaration(
@@ -656,7 +699,7 @@ def test_review_record_requires_prompt_model_and_set_aside() -> None:
         f"{REVIEW_BEGIN}\n```json\n{json.dumps(payload)}\n```\n{REVIEW_END}\n"
     )
     assert validate_review_record(bare, payload) == ["review record missing"]
-    assert validate_visible(bare, 2) == []
+    assert validate_visible(bare, 2) == ["review visible text missing"]
     without_prompt_label = "\n".join(
         line for line in _body(payload).splitlines() if not line.startswith("Prompt:")
     ) + "\n"

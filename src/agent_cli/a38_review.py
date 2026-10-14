@@ -175,21 +175,90 @@ def _prefix_matches(lines: list[str], expected: tuple[str, ...]) -> bool:
     return True
 
 
+def _review_titles(kind: str, model: str | None) -> tuple[str, str]:
+    """Title lines. A pass run names the model. An n_a run does not."""
+    en, de = ("Second review", "Zweiter Review") if kind == "second" else ("First review", "Erster Review")
+    if not model:
+        return en, de
+    return f"{en} with {model}", f"{de} mit {model}"
+
+
+def _title_model(body: str) -> tuple[bool, str | None]:
+    """Whether this comment must name one model, and that model.
+
+    An n_a-only run names no model. Every pass lane must have one Model
+    line, and those lines must all be the same text. A model in the JSON,
+    when a lane has one, must be that same text.
+    """
+    try:
+        payload = parse_review_block(body)
+    except ReviewError:
+        return True, None
+    lanes = payload.get("lanes")
+    if not isinstance(lanes, list) or not lanes:
+        return True, None
+    pass_ids: list[str] = []
+    for lane in lanes:
+        if not isinstance(lane, Mapping):
+            return True, None
+        lane_id = lane.get("id")
+        result = lane.get("result")
+        if not isinstance(lane_id, str):
+            return True, None
+        if result == "n_a":
+            continue
+        if result != "pass":
+            return True, None
+        pass_ids.append(lane_id)
+    if not pass_ids:
+        return False, None
+    found: dict[str, str] = {}
+    current: str | None = None
+    for line in _visible_lines(body):
+        match = _LANE_HEADER.match(line)
+        if match:
+            current = match.group(1)
+            continue
+        if current not in pass_ids or not _starts_with_label(line, "Model"):
+            continue
+        value = _plain(line.split(":", 1)[1])
+        if not value or current in found:
+            return True, None
+        found[current] = value
+    if any(lane_id not in found for lane_id in pass_ids):
+        return True, None
+    models = {found[lane_id] for lane_id in pass_ids}
+    if len(models) != 1:
+        return True, None
+    model = next(iter(models))
+    for lane in lanes:
+        if not isinstance(lane, Mapping) or lane.get("id") not in pass_ids:
+            continue
+        named = lane.get("model")
+        if isinstance(named, str) and named.strip() and named.strip() != model:
+            return True, None
+    return True, model
+
+
 def validate_visible(body: str, passes: int) -> list[str]:
     if not isinstance(body, str) or not _is_int(passes) or passes < 1:
         return ["review visible text missing"]
     lines = _visible_lines(body)
+    required, model = _title_model(body)
+    if required and not model:
+        return ["review visible text missing"]
     if _lane_ids_of(body) == set(RUNS[1]):
+        en_title, de_title = _review_titles("second", model)
         matched = any(
             _prefix_matches(
                 lines,
                 (
                     "EN:",
-                    "Second review",
+                    en_title,
                     found,
                     blocks,
                     "DE:",
-                    "Zweiter Review",
+                    de_title,
                     de_found,
                     de_blocks,
                 ),
@@ -208,8 +277,7 @@ def validate_visible(body: str, passes: int) -> list[str]:
         if any(line in banned for line in lines):
             return ["review visible text missing"]
         return []
-    en_title = "First review"
-    de_title = "Erster Review"
+    en_title, de_title = _review_titles("first", model)
     en_sentence = f"Ready after {passes} review passes."
     de_sentence = f"Bereit nach {passes} Review-Durchläufen."
 
