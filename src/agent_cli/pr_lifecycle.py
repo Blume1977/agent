@@ -9,7 +9,7 @@ import json
 import posixpath
 import re
 from collections import Counter
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .a38_review import LIFECYCLE_REASON
 from .readme_only import pull_is_guard_docs_only
@@ -310,9 +310,59 @@ def _complete_transition_comment(api: Any, assessment: Any, record: dict) -> Non
     )
 
 
+def _recorded_authorization_run_id(
+    approved: Mapping, siblings: Sequence[Mapping], pr_number: int
+) -> int:
+    path = approved["path"]
+    head_sha = approved.get("head_sha")
+    candidates: list[Mapping] = []
+    for run in siblings:
+        run_path = run.get("path")
+        run_id = run.get("id")
+        if not isinstance(run_path, str) or not isinstance(path, str):
+            continue
+        if type(run_id) is not int or run_id <= 0:
+            continue
+        if run_path != path:
+            continue
+        if run.get("head_sha") != head_sha:
+            continue
+        links = run.get("pull_requests")
+        if isinstance(links, list) and links and not any(
+            _field(p, "number") == pr_number for p in links
+        ):
+            continue
+        candidates.append(run)
+    approved_key = (_timestamp(approved.get("created_at")), approved["id"])
+    if not candidates:
+        return approved["id"]
+    newest = max(
+        candidates,
+        key=lambda item: (_timestamp(item.get("created_at")), item["id"]),
+    )
+    if (_timestamp(newest.get("created_at")), newest["id"]) <= approved_key:
+        return approved["id"]
+    conclusion = newest.get("conclusion")
+    if (
+        newest.get("status") == "completed"
+        and isinstance(conclusion, str)
+        and conclusion != "action_required"
+    ):
+        return newest["id"]
+    return approved["id"]
+
+
 def record_workflow_approval(api: Any, assessment: Any, run: Mapping, *, create: bool = True,
-                             existing: Mapping | None = None) -> dict:
+                             existing: Mapping | None = None,
+                             recorded_run_id: int | None = None) -> dict:
     """Persist a successful CI authorization before the next mutation."""
+    if recorded_run_id is None:
+        stored = run["id"]
+    else:
+        from .a38_guard import GuardError
+        if type(recorded_run_id) is not int or recorded_run_id <= 0:
+            raise GuardError("recorded authorization run id invalid")
+        stored = recorded_run_id
     invocation_comment = getattr(assessment, "_auth_comment", None)
     if existing is None and isinstance(invocation_comment, Mapping):
         existing = invocation_comment
@@ -325,7 +375,7 @@ def record_workflow_approval(api: Any, assessment: Any, run: Mapping, *, create:
                 "head": assessment.head_sha, "base": assessment.base_sha}
     runs = previous.get("runs", []) if all(previous.get(k) == v for k, v in identity.items()) else []
     runs = [r for r in runs if r.get("workflow") != run["path"]]
-    runs.append({"run_id": run["id"], "workflow": run["path"]})
+    runs.append({"run_id": stored, "workflow": run["path"]})
     saved = _save_record(api, assessment, AUTH_MARKER, {**identity, "runs": runs},
                          "I have authorized the recorded CI runs; their results are still pending.",
                          "Ich habe die dokumentierten CI-Läufe freigegeben; ihre Ergebnisse stehen noch aus.",

@@ -157,20 +157,20 @@ def test_ineligible_runs_are_never_approved(changes):
     fake.runs = [fake.run(**changes)]
     reconcile_pull(fake.api(), REPO, 1)
     assert not fake.posts
-    if changes.get("path") == ".github/workflows/unknown.yml":
-        assert fake.cancels == [101]
-    else:
-        assert not fake.cancels
+    assert not fake.cancels
 
 
 @pytest.mark.parametrize("changes", [{"conclusion": "success"}, {"conclusion": "failure"},
                                      {"status": "queued", "conclusion": None}, {"run_attempt": 2}])
-def test_newer_run_suppresses_old_blocked_run_even_when_not_successful(changes):
+def test_older_allowlisted_hold_with_newer_run_of_same_path(changes):
     fake = ApprovalAPI()
     fake.runs.append(fake.run(id=102, created_at="2026-09-05T11:01:00Z", **changes))
     reconcile_pull(fake.api(), REPO, 1)
-    assert not fake.posts
-    assert fake.cancels == [101]
+    if changes == {"status": "queued", "conclusion": None}:
+        assert fake.posts == []
+    else:
+        assert fake.posts == [101]
+    assert fake.cancels == []
 
 
 def test_permission_denial_fails_and_is_not_retried():
