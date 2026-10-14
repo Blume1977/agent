@@ -169,12 +169,17 @@ well-formed second-run comment that covers this head still returns a ready
 pull request to draft when its JSON boolean `blocks_merge` is true and
 `defects` is an integer >= 1. The reason is `Review defects block the merge`.
 A write hold does not keep Ready. A newer well-formed second-run comment
-with `blocks_merge` false clears that. A comment that does not parse, or
-whose `blocks_merge` is not that boolean paired with a counted `defects`,
-does not clear an older blocking comment and does not itself return the
-pull request to draft. Posted before the first run, it still does not satisfy Ready. If
-the only review comment is the second run, the result is `review completion
-comment missing`. A comment that contains both full runs is neither comment
+with `blocks_merge` false clears that. A comment that does not parse, whose
+visible sentence does not match `blocks_merge`, whose pass-run titles do not
+name one shared non-empty model, or whose `blocks_merge` is not that boolean
+paired with a counted `defects`, does not clear an older blocking comment and
+does not itself return the pull request to draft. The guard does not judge
+that model name. The second-run comment does not supply the completion
+failure, well-formed or not. Posted before the first run, it still does not
+satisfy Ready. If the only review comment is the second run, the result is
+`review completion comment missing`. The comment Ready reads is the first
+run. A pass run there that does not name one shared non-empty model in both
+titles is `review title model missing`. An `n_a` run names no model. A comment that contains both full runs is neither comment
 (reason `review runs must be separate comments`). Then mark the GitHub
 pull request Ready for review (`isDraft=false`). That leave-draft step is
 not merge and not pull-request completion.

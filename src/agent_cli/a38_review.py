@@ -261,27 +261,96 @@ def _title_model(body: str) -> tuple[bool, str | None]:
     return True, model
 
 
+def _leading_titles(lines: list[str]) -> tuple[str | None, str | None]:
+    """The first content line after ``EN:`` and the first after ``DE:``."""
+    en_title: str | None = None
+    de_title: str | None = None
+    seen_en = False
+    take_en = False
+    take_de = False
+    for line in lines:
+        if not seen_en:
+            if line == "EN:":
+                seen_en = True
+                take_en = True
+            continue
+        if take_en:
+            if not line.strip():
+                continue
+            en_title = line
+            take_en = False
+            continue
+        if line == "DE:":
+            take_de = True
+            continue
+        if take_de:
+            if not line.strip():
+                continue
+            de_title = line
+            break
+    return en_title, de_title
+
+
+def _title_model_text(title: str | None, prefix: str) -> str | None:
+    if not isinstance(title, str) or not title.startswith(prefix):
+        return None
+    model = title[len(prefix) :].strip()
+    if not _named_value(model):
+        return None
+    return model
+
+
+def _stated_title_model(lines: list[str], kind: str) -> str | None:
+    """One model named by both titles, or None when that fact is absent.
+
+    The guard does not judge the name and does not keep a list of models.
+    Both titles must carry the same non-empty text. A placeholder is absent.
+    """
+    en_title, de_title = _leading_titles(lines)
+    if kind == "second":
+        en_prefix, de_prefix = "Second review with ", "Zweiter Review mit "
+    else:
+        en_prefix, de_prefix = "First review with ", "Erster Review mit "
+    en_model = _title_model_text(en_title, en_prefix)
+    de_model = _title_model_text(de_title, de_prefix)
+    if en_model is None or en_model != de_model:
+        return None
+    return en_model
+
+
 def validate_visible(body: str, passes: int) -> list[str]:
     if not isinstance(body, str) or not _is_int(passes) or passes < 1:
         return ["review visible text missing"]
     lines = _visible_lines(body)
     required, model = _title_model(body)
+    kind = "second" if _lane_ids_of(body) == set(RUNS[1]) else "first"
+    reasons: list[str] = []
+    # A pass run must name one model in both titles. An n_a run must not.
+    # The second run stays optional: this rejects a comment that was posted,
+    # and a missing second-run comment never reaches this check.
+    if required and _stated_title_model(lines, kind) is None:
+        _add(reasons, "review title model missing")
+
+    def fail() -> list[str]:
+        _add(reasons, "review visible text missing")
+        return reasons
+
     if required and not model:
-        return ["review visible text missing"]
+        return fail()
     if _lane_ids_of(body) == set(RUNS[1]):
         try:
             second_payload = parse_review_block(body)
         except ReviewError:
-            return ["review visible text missing"]
+            return fail()
         pair = _second_sentences(second_payload)
         if pair is None:
-            return ["review visible text missing"]
+            return fail()
         en_lines, de_lines = pair
         en_title, de_title = _review_titles("second", model)
         if not _prefix_matches(
             lines, ("EN:", en_title, *en_lines, "DE:", de_title, *de_lines)
         ):
-            return ["review visible text missing"]
+            return fail()
         # Ready lines are the first run. The pass-count lines are neither run.
         # The old two-line defect pair is not a second-run sentence.
         banned = (
@@ -297,8 +366,8 @@ def validate_visible(body: str, passes: int) -> list[str]:
             "Sie blockieren den Merge nicht.",
         )
         if any(line in banned for line in lines):
-            return ["review visible text missing"]
-        return []
+            return fail()
+        return reasons
     en_title, de_title = _review_titles("first", model)
     en_sentence = f"Ready after {passes} review passes."
     de_sentence = f"Bereit nach {passes} Review-Durchläufen."
@@ -327,8 +396,8 @@ def validate_visible(body: str, passes: int) -> list[str]:
         de_sentence_at = -1
     de_summary = next_content(de_sentence_at + 1) if de_sentence_at >= 0 else -1
     if min(en_at, title_at, ready_at, summary_at, de_at, de_title_at, de_sentence_at, de_summary) < 0:
-        return ["review visible text missing"]
-    return []
+        return fail()
+    return reasons
 
 
 def _pass_lane_complete(lane: Mapping[str, Any], *, rules_bound: bool) -> bool:
@@ -1386,10 +1455,15 @@ def newest_second_run_blocks_merge(
     """True when the newest well-formed second-run comment counts blocking defects.
 
     The signal is boolean ``blocks_merge`` true together with ``defects`` >= 1.
-    A newer well-formed second-run comment with ``blocks_merge`` false clears
-    the draft. A comment that does not parse, or whose flag is not a boolean
-    paired with a counted defect, is skipped: it neither drafts nor clears.
-    This does not choose the completion comment.
+    The visible sentence must be the one that flag requires, and a pass run
+    must name one shared non-empty model in both titles. The guard does not
+    judge that name. A newer well-formed second-run comment with
+    ``blocks_merge`` false clears the draft. A comment that does not parse,
+    whose sentence does not match the flag, whose pass-run titles do not
+    name that model, or whose flag is not a boolean paired with a counted
+    defect, is skipped: it neither drafts nor clears. Absence of a
+    second-run comment is not a failure. This does not choose the completion
+    comment.
     """
     committed = _utc(committed_at)
     if committed is None:
@@ -1419,6 +1493,10 @@ def newest_second_run_blocks_merge(
         signal = _second_run_merge_signal(payload)
         if signal is None:
             continue
+        # The sentence and the flag are one fact. A mismatch is not a signal.
+        passes = payload.get("passes")
+        if not _is_int(passes) or validate_visible(text, passes):
+            continue
         return signal
     return False
 
@@ -1441,10 +1519,12 @@ def select_review_comment(
     new comment instead. Other comments do not remove an earlier valid
     declaration. A newer malformed declaration falls back to an older valid one.
     A later second-run comment is ignored for this choice and does not hide
-    an older valid first-run comment. Blocking defects on that later comment
-    are a separate gate: they do not choose this comment, and they still
-    return Ready to Draft. A comment that also carries local-CI markers
-    is skipped.
+    an older valid first-run comment. It does not supply the completion
+    failure, well-formed or not. If it is the only review comment, the
+    result is ``review completion comment missing``. Blocking defects on
+    that later comment are a separate gate: they do not choose this
+    comment, and they still return Ready to Draft. A comment that also
+    carries local-CI markers is skipped.
 
     Without ``covered_at``, the declaration must name ``head`` and the comment
     must be created after ``committed_at``. With ``covered_at``, each key is a
@@ -1478,6 +1558,10 @@ def select_review_comment(
     for _stamp, _cid, comment, forced in candidates:
         body = comment.get("body")
         text = body if isinstance(body, str) else ""
+        # The second run is optional. It never satisfies Ready and never
+        # supplies this failure, well-formed or not.
+        if _lane_ids_of(text) == set(RUNS[1]):
+            continue
         if forced:
             reasons = [forced]
         else:
@@ -1489,8 +1573,6 @@ def select_review_comment(
                 covered_heads=covered_heads,
             )
         if not reasons:
-            if _lane_ids_of(text) == set(RUNS[1]):
-                continue
             return comment, []
         if not newest_reasons:
             newest_reasons = reasons
