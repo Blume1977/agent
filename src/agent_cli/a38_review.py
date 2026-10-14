@@ -237,10 +237,16 @@ def _title_model(body: str) -> tuple[bool, str | None]:
     current: str | None = None
     in_fence = False
     for line in _visible_lines(body):
-        # Prompt fences are not record labels. A line inside one that
-        # starts with "Model:" must not erase the lane's Model line.
-        if line.strip().startswith("```"):
-            in_fence = not in_fence
+        # Same fence rule as _record_items: an opening line may carry
+        # an info string, and only a bare closing fence ends the body.
+        # A line such as ```python inside the prompt must not flip this
+        # and hide the next lane's Model line.
+        stripped = line.strip()
+        if not in_fence and stripped.startswith("```"):
+            in_fence = True
+            continue
+        if in_fence and stripped == "```":
+            in_fence = False
             continue
         if in_fence:
             continue

@@ -2011,7 +2011,7 @@ def test_gate_a_disagreeing_newer_comment_does_not_clear_a_block() -> None:
 def test_a_model_line_inside_the_prompt_fence_still_blocks() -> None:
     payload = _v2_second(blocks_merge=True, defects=2)
     for lane in payload["lanes"]:
-        lane["prompt"] = _RECORD_PROMPT + "\nModel: not a lane label"
+        lane["prompt"] = _RECORD_PROMPT + "\n```python\nModel: not a lane label"
     body = _body(payload, passes=1)
     assert "Model: not a lane label" in body
     assert validate_visible(body, 1) == []
