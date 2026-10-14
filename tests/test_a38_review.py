@@ -113,17 +113,13 @@ def _body(payload: dict, *, passes: int = 2) -> str:
     if ids == {"conformity-b", "logic-b"}:
         en_title = "Second review"
         de_title = "Zweiter Review"
-        en_sentence = "No defects."
-        en_summary = "Nothing in this review blocks the merge."
-        de_sentence = "Keine Mängel."
-        de_summary = "Nichts aus diesem Review blockiert den Merge."
+        en_lines = ["No defects."]
+        de_lines = ["Keine Mängel."]
     else:
         en_title = "First review"
         de_title = "Erster Review"
-        en_sentence = f"Ready after {passes} review passes."
-        en_summary = "The change is covered."
-        de_sentence = f"Bereit nach {passes} Review-Durchläufen."
-        de_summary = "Die Änderung ist abgedeckt."
+        en_lines = [f"Ready after {passes} review passes.", "The change is covered."]
+        de_lines = [f"Bereit nach {passes} Review-Durchläufen.", "Die Änderung ist abgedeckt."]
     model = _visible_model(payload)
     if model:
         en_title = f"{en_title} with {model}"
@@ -131,14 +127,12 @@ def _body(payload: dict, *, passes: int = 2) -> str:
     return (
         "EN:\n"
         f"{en_title}\n"
-        f"{en_sentence}\n"
-        f"{en_summary}\n"
-        "\n"
+        + "".join(f"{line}\n" for line in en_lines)
+        + "\n"
         "DE:\n"
         f"{de_title}\n"
-        f"{de_sentence}\n"
-        f"{de_summary}\n"
-        "\n"
+        + "".join(f"{line}\n" for line in de_lines)
+        + "\n"
         "<details>\n<summary>Details</summary>\n\n"
         + render_review_record(_renderable(payload))
         + f"{REVIEW_BEGIN}\n"
@@ -221,7 +215,10 @@ def test_second_run_ready_lines_are_visible_text_missing() -> None:
 
 def test_second_run_second_review_lines_are_visible() -> None:
     payload = _pass_payload(lanes=_run("b"))
-    assert validate_visible(_body(payload), payload["passes"]) == []
+    body = _body(payload)
+    assert "Nothing in this review blocks the merge." not in body
+    assert "Nichts aus diesem Review blockiert den Merge." not in body
+    assert validate_visible(body, payload["passes"]) == []
 
 
 def test_first_run_second_review_lines_are_visible_text_missing() -> None:
@@ -321,13 +318,13 @@ def test_second_run_ready_lines_as_summary_are_visible_text_missing() -> None:
     body = (
         _body(payload, passes=passes)
         .replace(
-            "Nothing in this review blocks the merge.",
-            f"Ready after {passes} review passes.",
+            "No defects.\n",
+            f"No defects.\nReady after {passes} review passes.\n",
             1,
         )
         .replace(
-            "Nichts aus diesem Review blockiert den Merge.",
-            f"Bereit nach {passes} Review-Durchläufen.",
+            "Keine Mängel.\n",
+            f"Keine Mängel.\nBereit nach {passes} Review-Durchläufen.\n",
             1,
         )
     )
@@ -340,18 +337,8 @@ def test_second_run_defect_pair_is_visible() -> None:
     payload = _pass_payload(lanes=_run("b"))
     body = (
         _body(payload)
-        .replace("No defects.", "There are defects.", 1)
-        .replace("Keine Mängel.", "Es gibt Mängel.", 1)
-        .replace(
-            "Nothing in this review blocks the merge.",
-            "They do not block the merge.",
-            1,
-        )
-        .replace(
-            "Nichts aus diesem Review blockiert den Merge.",
-            "Sie blockieren den Merge nicht.",
-            1,
-        )
+        .replace("No defects.\n", "There are defects.\nThey do not block the merge.\n", 1)
+        .replace("Keine Mängel.\n", "Es gibt Mängel.\nSie blockieren den Merge nicht.\n", 1)
     )
     assert validate_visible(body, payload["passes"]) == []
 
@@ -360,13 +347,9 @@ def test_second_run_old_combined_sentence_is_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("b"))
     body = (
         _body(payload)
+        .replace("No defects.", "No defects, and nothing in this review blocks the merge.", 1)
         .replace(
-            "No defects.\nNothing in this review blocks the merge.",
-            "No defects, and nothing in this review blocks the merge.",
-            1,
-        )
-        .replace(
-            "Keine Mängel.\nNichts aus diesem Review blockiert den Merge.",
+            "Keine Mängel.",
             "Keine Mängel, und nichts aus diesem Review blockiert den Merge.",
             1,
         )
@@ -377,20 +360,39 @@ def test_second_run_old_combined_sentence_is_visible_text_missing() -> None:
 def test_second_run_mixed_pair_is_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("b"))
     body = _body(payload).replace(
-        "Nothing in this review blocks the merge.",
-        "They do not block the merge.",
+        "No defects.\n",
+        "There are defects.\nThey do not block the merge.\n",
         1,
     )
     assert validate_visible(body, payload["passes"]) == ["review visible text missing"]
+
+
+def test_second_run_no_defect_merge_sentence_is_visible_text_missing() -> None:
+    payload = _pass_payload(lanes=_run("b"))
+    between = (
+        _body(payload)
+        .replace("No defects.\n", "No defects.\nNothing in this review blocks the merge.\n", 1)
+        .replace(
+            "Keine Mängel.\n",
+            "Keine Mängel.\nNichts aus diesem Review blockiert den Merge.\n",
+            1,
+        )
+    )
+    assert validate_visible(between, payload["passes"]) == ["review visible text missing"]
+    trailing = _body(payload).replace(
+        "Keine Mängel.\n",
+        "Keine Mängel.\nNothing in this review blocks the merge.\n",
+        1,
+    )
+    assert validate_visible(trailing, payload["passes"]) == ["review visible text missing"]
 
 
 def test_second_run_pass_count_line_is_visible_text_missing() -> None:
     payload = _pass_payload(lanes=_run("b"))
     passes = payload["passes"]
     body = _body(payload).replace(
-        "Nichts aus diesem Review blockiert den Merge.\n",
-        "Nichts aus diesem Review blockiert den Merge.\n"
-        f"Second review after {passes} review passes.\n",
+        "Keine Mängel.\n",
+        f"Keine Mängel.\nSecond review after {passes} review passes.\n",
         1,
     )
     assert validate_visible(body, passes) == ["review visible text missing"]

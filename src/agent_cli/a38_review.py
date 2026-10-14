@@ -133,20 +133,17 @@ def _add(reasons: list[str], text: str) -> None:
         reasons.append(text)
 
 
-# The second review's two sentences are this pair, in this order, in both
-# languages. The pass-count line is not one of them.
+# The second review says whether this run found defects. With no defects
+# that is one sentence. With defects it is two, and the second says they
+# do not block the merge. The pass-count line is neither.
 _SECOND_VISIBLE = (
     (
-        "No defects.",
-        "Nothing in this review blocks the merge.",
-        "Keine Mängel.",
-        "Nichts aus diesem Review blockiert den Merge.",
+        ("No defects.",),
+        ("Keine Mängel.",),
     ),
     (
-        "There are defects.",
-        "They do not block the merge.",
-        "Es gibt Mängel.",
-        "Sie blockieren den Merge nicht.",
+        ("There are defects.", "They do not block the merge."),
+        ("Es gibt Mängel.", "Sie blockieren den Merge nicht."),
     ),
 )
 
@@ -252,27 +249,21 @@ def validate_visible(body: str, passes: int) -> list[str]:
         matched = any(
             _prefix_matches(
                 lines,
-                (
-                    "EN:",
-                    en_title,
-                    found,
-                    blocks,
-                    "DE:",
-                    de_title,
-                    de_found,
-                    de_blocks,
-                ),
+                ("EN:", en_title, *en_lines, "DE:", de_title, *de_lines),
             )
-            for found, blocks, de_found, de_blocks in _SECOND_VISIBLE
+            for en_lines, de_lines in _SECOND_VISIBLE
         )
         if not matched:
             return ["review visible text missing"]
         # Ready lines are the first run. The pass-count lines are neither run.
+        # A second review that found no defects does not add a merge sentence.
         banned = (
             f"Ready after {passes} review passes.",
             f"Bereit nach {passes} Review-Durchläufen.",
             f"Second review after {passes} review passes.",
             f"Zweiter Review nach {passes} Review-Durchläufen.",
+            "Nothing in this review blocks the merge.",
+            "Nichts aus diesem Review blockiert den Merge.",
         )
         if any(line in banned for line in lines):
             return ["review visible text missing"]

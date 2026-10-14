@@ -2,7 +2,7 @@
 
 Worked comments for the visible text in [docs/a38.md](../docs/a38.md). The no-defect comments are complete declarations. `validate_visible` also accepts the non-blocking defect pair, but an accepted declaration still has `defects` 0, so that pair is shown without a machine block. Defects that block the merge have no completion comment. This file is not a second specification.
 
-`EN:` comes first. Each label is its own line. Each language has a title and two sentences. A blank line separates the languages. The title of a pass run names the model, the same text in both languages: `First review with <model>` / `Erster Review mit <model>`, and `Second review with <model>` / `Zweiter Review mit <model>`. That text is the `Model` line of every pass lane in the comment. An `n_a` run names no model. The task sentence and the machine block stay in `<details>`.
+`EN:` comes first. Each label is its own line. The first review has a title and two sentences in each language. The second review has a title and one sentence when it found no defects, and a title and two sentences when it found defects. A blank line separates the languages. The title of a pass run names the model, the same text in both languages: `First review with <model>` / `Erster Review mit <model>`, and `Second review with <model>` / `Zweiter Review mit <model>`. That text is the `Model` line of every pass lane in the comment. An `n_a` run names no model. The task sentence and the machine block stay in `<details>`.
 
 The head below is a placeholder. Use the current 40-hex head. When the base revision has no `REVIEW.md`, the prompts are the two sentences shown. When it has `REVIEW.md`, each prompt is the compliance sentence from the specification.
 
@@ -58,18 +58,16 @@ Set aside: none.
 
 ## Second review, no defects
 
-A later comment. It does not satisfy Ready. The two sentences are this pair and no others. The sentence about what the pull request changes stays in the details.
+A later comment. It does not satisfy Ready. The only sentence under the title is `No defects.` / `Keine Mängel.`. Do not add a sentence about the merge. The sentence about what the pull request changes stays in the details.
 
 ````
 EN:
 Second review with Codex Astra 6
 No defects.
-Nothing in this review blocks the merge.
 
 DE:
 Zweiter Review mit Codex Astra 6
 Keine Mängel.
-Nichts aus diesem Review blockiert den Merge.
 
 <details>
 <summary>Details</summary>
@@ -152,11 +150,18 @@ After the fix, post the [first review](#first-review-no-defects). `N` is the num
 
 ## Not this
 
-The pass-count lines are not the second review. Neither is a mixed pair.
+The pass-count lines are not the second review. Neither is a mixed pair. A second review that found no defects does not add a sentence about the merge.
 
 ```
 EN:
 Second review
 Second review after 1 review passes.
 No defects, and nothing in this review blocks the merge.
+```
+
+```
+EN:
+Second review with Codex Astra 6
+No defects.
+Nothing in this review blocks the merge.
 ```
