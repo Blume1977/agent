@@ -235,7 +235,15 @@ def _title_model(body: str) -> tuple[bool, str | None]:
         return False, None
     found: dict[str, str] = {}
     current: str | None = None
+    in_fence = False
     for line in _visible_lines(body):
+        # Prompt fences are not record labels. A line inside one that
+        # starts with "Model:" must not erase the lane's Model line.
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         match = _LANE_HEADER.match(line)
         if match:
             current = match.group(1)

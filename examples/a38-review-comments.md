@@ -25,7 +25,7 @@ Der Zahlungsbetrag wird vor dem Senden gegen die Rechnung geprüft.
 <summary>Details</summary>
 
 Head: `0123456789abcdef0123456789abcdef01234567`
-Runs: `conformity-a` with `logic-a`.
+Runs: `conformity-a` with `logic-a`. The second run may be omitted.
 Lane `conformity-a`:
 Provider: xAI
 Model: Grok 4.7

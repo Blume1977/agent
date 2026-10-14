@@ -2008,6 +2008,20 @@ def test_gate_a_disagreeing_newer_comment_does_not_clear_a_block() -> None:
     assert reasons == [BLOCKING_REVIEW_REASON]
 
 
+def test_a_model_line_inside_the_prompt_fence_still_blocks() -> None:
+    payload = _v2_second(blocks_merge=True, defects=2)
+    for lane in payload["lanes"]:
+        lane["prompt"] = _RECORD_PROMPT + "\nModel: not a lane label"
+    body = _body(payload, passes=1)
+    assert "Model: not a lane label" in body
+    assert validate_visible(body, 1) == []
+    assert validate_review_record(body, payload) == []
+    second = _comment(body, cid=2, user=10, created="2026-09-03T00:00:00Z")
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
+    assert ok is False
+    assert reasons == [BLOCKING_REVIEW_REASON]
+
+
 def test_gate_a_second_run_without_the_title_model_is_not_a_signal() -> None:
     payload = _v2_second(blocks_merge=True, defects=2)
     body = (
