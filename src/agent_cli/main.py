@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from .allow import (
     ACTIONS,
@@ -1526,6 +1526,7 @@ def cmd_pair(args: list[str]) -> None:
 
 
 _MAX_BACKOFF = 30.0
+SYNC_IDLE_SECONDS = 30.0
 
 
 def cmd_sync(args: list[str]) -> None:
@@ -1586,14 +1587,32 @@ def _run_sync_ws_session(
     """Run one websocket connection's message loop. Raises on disconnect/error;
     the caller in cmd_sync reconnects with backoff instead of exiting the process.
     Sets established["at"] once the handshake actually succeeds, so the caller can
-    measure connection stability from there rather than from the connect attempt."""
+    measure connection stability from there rather than from the connect attempt.
+    The push is due every SYNC_IDLE_SECONDS whether or not frames arrive, and a frame
+    already being handled when the deadline passes delays it by that handling."""
     ws = hub.connect_sync_ws()
     try:
         ws.send(json.dumps({"type": "control-ready"}))
         established["at"] = time.monotonic()
         last_capture.clear()  # a new connection has no idea what a prior one already sent
         _publish_terminals(store, runtime, ws, terminal_seq, last_capture)
-        for raw in ws:
+        next_sync = time.monotonic() + SYNC_IDLE_SECONDS
+        while True:
+            remaining = next_sync - time.monotonic()
+            if remaining <= 0:
+                _sync_once(store)
+                next_sync = time.monotonic() + SYNC_IDLE_SECONDS
+                _publish_terminals(store, runtime, ws, terminal_seq, last_capture)
+                continue
+            try:
+                raw = ws.recv(timeout=remaining)
+            except TimeoutError:
+                _sync_once(store)
+                next_sync = time.monotonic() + SYNC_IDLE_SECONDS
+                _publish_terminals(store, runtime, ws, terminal_seq, last_capture)
+                continue
+            except ConnectionClosed as exc:
+                raise HubError("websocket closed") from exc
             try:
                 message = json.loads(raw)
             except (TypeError, ValueError):
@@ -1617,8 +1636,8 @@ def _run_sync_ws_session(
                             continue
             if should_sync_on_ws(message):
                 _sync_once(store)
+                next_sync = time.monotonic() + SYNC_IDLE_SECONDS
             _publish_terminals(store, runtime, ws, terminal_seq, last_capture)
-        raise HubError("websocket closed")
     finally:
         try:
             ws.close()
