@@ -257,6 +257,7 @@ class LifecycleAPI(ApprovalAPI):
         self.pull.update(draft=False, mergeable=True, node_id="PR_example")
         self.runs[0].update(check_suite_id=201, conclusion="success")
         self.checks = []
+        self.checks_by_sha = {}
         self.transitions = []
         self.graphql_error = False
         self.graphql_noop_draft = False
@@ -270,7 +271,14 @@ class LifecycleAPI(ApprovalAPI):
     def request_fn(self, method, url, body=None):
         path = urlparse(url).path
         if method == "GET" and path.endswith("/check-runs"):
-            return 200, {"total_count": len(self.checks), "check_runs": copy.deepcopy(self.checks)}, {}
+            sha = path.split("/commits/")[1].split("/")[0]
+            if sha in self.checks_by_sha:
+                checks = self.checks_by_sha[sha]
+            elif sha == self.pull["head"]["sha"]:
+                checks = self.checks
+            else:
+                checks = []
+            return 200, {"total_count": len(checks), "check_runs": copy.deepcopy(checks)}, {}
         if method == "POST" and path == "/graphql":
             payload = json.loads(body)
             if "reviewThreads" in payload.get("query", ""):
@@ -1583,7 +1591,7 @@ def test_hold_clears_draft_record_so_later_human_draft_does_not_restore():
     assert fake.pull["draft"]
 
 
-def test_non_allowlisted_hold_does_not_block_ready():
+def test_non_allowlisted_hold_is_approved_and_blocks_until_green():
     fake = LifecycleAPI()
     fake.pull["draft"] = True
     fake.cancel_clears_hold = False
@@ -1599,13 +1607,15 @@ def test_non_allowlisted_hold_does_not_block_ready():
         head_repository={"full_name": "author/public-app"},
     ))
     result = reconcile_pull(fake.api(), REPO, 1)
-    assert result.lifecycle["action"] == "ready"
-    assert fake.transitions == [False]
-    assert not any("live-e2e.yml" in str(reason) for reason in result.lifecycle["reasons"])
+    assert "workflow:approve:202" in result.writes
+    assert result.lifecycle["action"] == "unchanged"
+    assert fake.pull["draft"] is True
+    assert fake.transitions == []
+    assert "CI not green: .github/workflows/live-e2e.yml (queued)" in result.lifecycle["reasons"]
     assert fake.cancels == []
 
 
-def test_non_allowlisted_cancelled_hold_does_not_block_ready():
+def test_non_allowlisted_hold_is_approved_when_cancel_would_clear():
     fake = LifecycleAPI()
     fake.pull["draft"] = True
     fake.runs.append(fake.run(
@@ -1620,10 +1630,169 @@ def test_non_allowlisted_cancelled_hold_does_not_block_ready():
         head_repository={"full_name": "author/public-app"},
     ))
     result = reconcile_pull(fake.api(), REPO, 1)
+    assert "workflow:approve:202" in result.writes
+    assert result.lifecycle["action"] == "unchanged"
+    assert fake.pull["draft"] is True
+    assert fake.transitions == []
+    assert "CI not green: .github/workflows/live-e2e.yml (queued)" in result.lifecycle["reasons"]
+    assert fake.cancels == []
+
+
+def test_merge_commit_hold_blocks_ready_until_it_finishes():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.runs[0].update(status="completed", conclusion="action_required", head_sha=merge)
+    fake.cancel_clears_hold = False
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert "workflow:approve:101" in result.writes
+    assert result.lifecycle["action"] == "draft"
+    assert fake.transitions == [True]
+    assert "CI not green: .github/workflows/test.yml (queued)" in result.lifecycle["reasons"]
+    assert not any(str(reason).startswith("Missing required CI") for reason in result.lifecycle["reasons"])
+
+
+def test_merge_commit_required_check_is_read_from_that_commit():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.pull["draft"] = True
+    fake.runs[0].update(
+        head_sha=merge,
+        status="completed",
+        conclusion="success",
+        check_suite_id=401,
+    )
+    fake.config["lifecycle"]["required_checks"] = {PATH: ["Test"]}
+    fake.set_pr_guard_config(fake.config)
+    fake.checks_by_sha[merge] = [{
+        "id": 22,
+        "name": "Test",
+        "check_suite": {"id": 401},
+        "status": "completed",
+        "conclusion": "success",
+    }]
+    result = reconcile_pull(fake.api(), REPO, 1)
     assert result.lifecycle["action"] == "ready"
     assert fake.transitions == [False]
-    assert not any("live-e2e.yml" in str(reason) for reason in result.lifecycle["reasons"])
-    assert fake.cancels == []
+    assert not any("Required CI check not green" in str(reason) for reason in result.lifecycle["reasons"])
+
+
+def test_merge_commit_required_check_failure_blocks_ready():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.pull["draft"] = True
+    fake.runs[0].update(
+        head_sha=merge,
+        status="completed",
+        conclusion="success",
+        check_suite_id=401,
+    )
+    fake.config["lifecycle"]["required_checks"] = {PATH: ["Test"]}
+    fake.set_pr_guard_config(fake.config)
+    fake.checks_by_sha[merge] = [{
+        "id": 22,
+        "name": "Test",
+        "check_suite": {"id": 401},
+        "status": "completed",
+        "conclusion": "failure",
+    }]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert result.lifecycle["action"] == "unchanged"
+    assert fake.transitions == []
+    assert "Required CI check not green: .github/workflows/test.yml / Test" in result.lifecycle["reasons"]
+
+
+def test_merge_commit_status_pending_blocks_ready():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.runs[0].update(
+        head_sha=merge,
+        status="completed",
+        conclusion="success",
+        check_suite_id=401,
+    )
+    fake.statuses.append({"sha": merge, "context": "external", "state": "pending"})
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert "CI status not green: external (pending)" in result.lifecycle["reasons"]
+    assert fake.transitions == [True]
+
+
+def test_success_on_one_sha_does_not_hide_a_failure_on_the_other():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.checks_by_sha[HEAD] = [{
+        "id": 10,
+        "name": "lint",
+        "check_suite": {"id": 900},
+        "status": "completed",
+        "conclusion": "failure",
+    }]
+    fake.checks_by_sha[merge] = [{
+        "id": 20,
+        "name": "lint",
+        "check_suite": {"id": 901},
+        "status": "completed",
+        "conclusion": "success",
+    }]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert "CI check not green: lint (failure)" in result.lifecycle["reasons"]
+    assert fake.transitions == [True]
+
+
+def test_failure_on_the_merge_sha_is_not_hidden_by_a_newer_head_success():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.checks_by_sha[HEAD] = [{
+        "id": 20,
+        "name": "lint",
+        "check_suite": {"id": 901},
+        "status": "completed",
+        "conclusion": "success",
+    }]
+    fake.checks_by_sha[merge] = [{
+        "id": 10,
+        "name": "lint",
+        "check_suite": {"id": 900},
+        "status": "completed",
+        "conclusion": "failure",
+    }]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert "CI check not green: lint (failure)" in result.lifecycle["reasons"]
+    assert fake.transitions == [True]
+
+
+def test_merge_sha_run_without_head_repository_fails_closed():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.runs[0].update(head_sha=merge, status="completed", conclusion="success")
+    fake.runs[0].pop("head_repository")
+    with pytest.raises(GuardError, match="workflow run head repository missing"):
+        reconcile_pull(fake.api(), REPO, 1)
+
+
+def test_base_repository_merge_sha_failure_does_not_hide_head_success():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.pull["draft"] = True
+    fake.runs.append(fake.run(
+        id=501,
+        head_sha=merge,
+        conclusion="failure",
+        status="completed",
+        created_at="2026-09-05T13:00:00Z",
+        head_repository={"full_name": REPO},
+    ))
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert result.lifecycle["action"] == "ready"
+    assert fake.transitions == [False]
+    assert not any("test.yml" in str(reason) for reason in result.lifecycle["reasons"])
 
 
 def test_non_allowlisted_failure_still_blocks_ready():
@@ -1672,19 +1841,20 @@ def test_non_allowlisted_cancel_after_job_started_still_blocks_ready():
     assert fake.cancels == []
 
 
-def test_required_workflow_action_required_still_blocks_when_not_allowlisted():
+def test_required_workflow_hold_is_approved_and_still_blocks_when_not_allowlisted():
     fake = LifecycleAPI()
     fake.runs[0].update(status="completed", conclusion="action_required")
     fake.config["workflow_approval"]["workflows"] = [".github/workflows/other.yml"]
     fake.set_pr_guard_config(fake.config)
     fake.cancel_clears_hold = False
     result = reconcile_pull(fake.api(), REPO, 1)
+    assert "workflow:approve:101" in result.writes
     assert result.lifecycle["action"] == "draft"
     assert fake.transitions == [True]
-    assert "CI not green: .github/workflows/test.yml (action_required)" in result.lifecycle["reasons"]
+    assert "CI not green: .github/workflows/test.yml (queued)" in result.lifecycle["reasons"]
 
 
-def test_newer_non_allowlisted_hold_does_not_hide_older_failure():
+def test_approved_newer_hold_waits_instead_of_keeping_the_older_failure():
     fake = LifecycleAPI()
     fake.pull["draft"] = True
     fake.cancel_clears_hold = False
@@ -1711,10 +1881,13 @@ def test_newer_non_allowlisted_hold_does_not_hide_older_failure():
         head_repository={"full_name": "author/public-app"},
     ))
     result = reconcile_pull(fake.api(), REPO, 1)
+    assert "workflow:approve:203" in result.writes
+    assert "workflow:approve:202" not in result.writes
     assert result.lifecycle["action"] == "unchanged"
     assert fake.pull["draft"] is True
     assert fake.transitions == []
-    assert "CI not green: .github/workflows/live-e2e.yml (failure)" in result.lifecycle["reasons"]
+    assert "CI not green: .github/workflows/live-e2e.yml (queued)" in result.lifecycle["reasons"]
+    assert fake.cancels == []
 
 
 @pytest.mark.parametrize("hold_conclusion", ["action_required", "cancelled"])

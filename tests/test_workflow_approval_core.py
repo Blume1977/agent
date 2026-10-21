@@ -98,6 +98,19 @@ class ApprovalAPI(FakeAPI):
         return status, copy.deepcopy(data), headers
 
 
+def test_unknown_workflow_path_on_this_head_is_approved():
+    fake = ApprovalAPI()
+    unknown = ".github/workflows/unknown.yml"
+    fake.runs = [fake.run(path=unknown)]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert result.ok
+    assert fake.posts == [101]
+    assert fake.cancels == []
+    assert result.workflow_approvals == [
+        {"run_id": 101, "workflow": unknown, "head": HEAD, "status": "approved"}
+    ]
+
+
 def test_real_reconcile_approves_initial_private_fork_run_and_is_idempotent():
     fake = ApprovalAPI()
     result = reconcile_pull(fake.api(), REPO, 1)
@@ -150,7 +163,6 @@ def test_no_approval_without_authorization(case):
     {"status": "queued", "conclusion": None}, {"conclusion": "success"}, {"conclusion": "failure"},
     {"run_attempt": 2}, {"event": "push"}, {"head_sha": BASE}, {"head_branch": "other"},
     {"repository": {"full_name": "other/repo"}}, {"head_repository": {"full_name": "other/fork"}},
-    {"path": ".github/workflows/unknown.yml"},
 ])
 def test_ineligible_runs_are_never_approved(changes):
     fake = ApprovalAPI()
@@ -200,7 +212,7 @@ def test_change_before_write_rejects_stale_authorization(what):
     assert not fake.posts
 
 
-@pytest.mark.parametrize("what", ["ambiguous", "retargeted", "reopened", "older", "foreign_link"])
+@pytest.mark.parametrize("what", ["ambiguous", "retargeted", "reopened", "older"])
 def test_private_fork_association_must_be_proven(what):
     fake = ApprovalAPI()
     if what == "ambiguous":
@@ -210,13 +222,19 @@ def test_private_fork_association_must_be_proven(what):
     elif what in {"retargeted", "reopened"}:
         fake.events = [{"event": "base_ref_changed" if what == "retargeted" else "reopened",
                         "created_at": "2026-09-05T11:30:00Z"}]
-    elif what == "older":
-        fake.runs[0]["created_at"] = "2026-08-01T00:00:00Z"
     else:
-        fake.runs[0]["pull_requests"] = [{"number": 2, "head": {"sha": HEAD}, "base": {"sha": BASE}}]
+        fake.runs[0]["created_at"] = "2026-08-01T00:00:00Z"
     with pytest.raises(GuardError):
         reconcile_pull(fake.api(), REPO, 1)
     assert not fake.posts
+
+
+def test_private_fork_foreign_link_is_not_approved():
+    fake = ApprovalAPI()
+    fake.runs[0]["pull_requests"] = [{"number": 2, "head": {"sha": HEAD}, "base": {"sha": BASE}}]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == []
+    assert result.workflow_approvals == []
 
 
 def test_private_fork_diverged_base_still_approves():

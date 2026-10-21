@@ -24,6 +24,7 @@ from test_a38_guard import (
     HEAD,
     REPO,
     FakeAPI,
+    _clean_commit,
     _pr_guard_config,
     _report_comment,
 )
@@ -34,6 +35,9 @@ PATH = ".github/workflows/test.yml"
 OTHER = ".github/workflows/other.yaml"
 FORK = "contributor/fork"
 BRANCH = "feature"
+OLD = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+MID = "1111111111111111111111111111111111111111"
+MERGE = "ffffffffffffffffffffffffffffffffffffffff"
 MAINTAINER = 3030
 A38_BODY = {
     "schema": "pr-guard/v1",
@@ -83,6 +87,9 @@ class FakeApproval(FakeAPI):
         self.comparison = "ahead"
         self.run_override = None
         self.listed_pulls: list[dict] | None = None
+        self.pull_commits: list[dict] | None = None
+        self.merge_commit_sha: str | None = None
+        self.honor_run_query = False
 
     @staticmethod
     def run(**changes: object) -> dict:
@@ -103,6 +110,32 @@ class FakeApproval(FakeAPI):
         data.update(changes)
         return data
 
+    @staticmethod
+    def _query_matches(run: dict, query: dict) -> bool:
+        def one(key: str) -> str | None:
+            values = query.get(key)
+            if not values:
+                return None
+            return values[0]
+
+        head_sha = one("head_sha")
+        if head_sha is not None and run.get("head_sha") != head_sha:
+            return False
+        branch = one("branch")
+        if branch is not None and run.get("head_branch") != branch:
+            return False
+        event = one("event")
+        if event is not None and run.get("event") != event:
+            return False
+        status = one("status")
+        if status is None:
+            return True
+        # GitHub's status=action_required selects the hold, whose own status
+        # field stays "completed" and whose conclusion is "action_required".
+        if status == "action_required":
+            return run.get("conclusion") == "action_required" or run.get("status") == "action_required"
+        return run.get("status") == status
+
     def request_fn(self, method: str, url: str, body: bytes | None = None):
         path = urlparse(url).path
         root = f"/repos/{REPO}"
@@ -116,9 +149,15 @@ class FakeApproval(FakeAPI):
                 return 200, copy.deepcopy(self.inventory(page)), {}
             if self.inventory is not None:
                 return 200, copy.deepcopy(self.inventory), {}
+            source = self.runs
+            if self.honor_run_query:
+                source = [
+                    run for run in self.runs
+                    if self._query_matches(run, parse_qs(urlparse(url).query))
+                ]
             start = (page - 1) * per_page
-            chunk = self.runs[start : start + per_page]
-            return 200, {"total_count": len(self.runs), "workflow_runs": copy.deepcopy(chunk)}, {}
+            chunk = source[start : start + per_page]
+            return 200, {"total_count": len(source), "workflow_runs": copy.deepcopy(chunk)}, {}
         if path.startswith(f"{root}/actions/runs/"):
             ident = int(path.split("/actions/runs/")[1].split("/")[0])
             if method == "GET" and path.endswith("/jobs"):
@@ -171,8 +210,18 @@ class FakeApproval(FakeAPI):
         if method == "GET" and path == f"{root}/issues/1/events":
             self.event_reads += 1
             return 200, copy.deepcopy(self.events), {}
+        if method == "GET" and path == f"{root}/pulls/1/commits" and self.pull_commits is not None:
+            return 200, copy.deepcopy(self.pull_commits), {}
         status, data, headers = super().request_fn(method, url, body)
-        return status, copy.deepcopy(data), headers
+        data = copy.deepcopy(data)
+        if (
+            method == "GET"
+            and path == f"{root}/pulls/1"
+            and self.merge_commit_sha is not None
+            and isinstance(data, dict)
+        ):
+            data["merge_commit_sha"] = self.merge_commit_sha
+        return status, data, headers
 
 
 def _private_fork() -> FakeApproval:
@@ -439,7 +488,6 @@ def test_private_fork_does_not_require_base_ancestry(status: str) -> None:
         {"status": "completed", "conclusion": "neutral"},
         {"status": "completed", "conclusion": "startup_failure"},
         {"status": "completed", "conclusion": "stale"},
-        {"status": "waiting", "conclusion": None},
         {"run_attempt": 2},
     ],
 )
@@ -454,7 +502,9 @@ def test_older_held_allowlisted_is_approved_when_newer_is_completed(changes: dic
     assert any(item["run_id"] == 101 and item["status"] == "approved" for item in result.workflow_approvals)
 
 
-@pytest.mark.parametrize("status", ["queued", "in_progress"])
+@pytest.mark.parametrize(
+    "status", ["queued", "in_progress", "waiting", "requested", "pending"]
+)
 def test_older_held_allowlisted_is_left_when_newer_is_in_flight(status: str) -> None:
     fake = FakeApproval()
     fake.runs.append(
@@ -524,26 +574,32 @@ def test_both_held_allowlisted_same_path_are_approved_oldest_first() -> None:
     assert _comment_record(auths[0])["runs"] == [{"run_id": 101, "workflow": PATH}]
 
 
-def test_non_allowlisted_held_run_on_this_head_is_not_approved_or_cancelled() -> None:
+def test_non_allowlisted_held_run_on_this_head_is_approved_not_cancelled() -> None:
     fake = FakeApproval()
     fake.runs.append(
         fake.run(id=202, path=OTHER, created_at="2026-09-05T11:00:00Z")
     )
     result = reconcile_pull(fake.api(), REPO, 1)
-    assert fake.posts == [101]
+    assert fake.posts == [101, 202]
     assert fake.cancels == []
     assert "workflow:approve:101" in result.writes
+    assert "workflow:approve:202" in result.writes
     assert "workflow:cancel:202" not in result.writes
-    assert [item["run_id"] for item in result.workflow_approvals] == [101]
+    assert not any(w.startswith("workflow:cancel:") for w in result.writes)
+    assert [item["run_id"] for item in result.workflow_approvals] == [101, 202]
     assert not _marker_comments(fake, CANCEL_MARKER)
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert {row["run_id"] for row in _comment_record(auths[0])["runs"]} == {101, 202}
 
 
-def test_dry_run_non_allowlisted_held_run_adds_nothing() -> None:
+def test_dry_run_non_allowlisted_held_run_is_planned() -> None:
     fake = FakeApproval()
     fake.runs.append(fake.run(id=202, path=OTHER))
     result = reconcile_pull(fake.api(), REPO, 1, dry_run=True)
     assert result.workflow_approvals == [
-        {"run_id": 101, "workflow": PATH, "head": HEAD, "status": "planned"}
+        {"run_id": 101, "workflow": PATH, "head": HEAD, "status": "planned"},
+        {"run_id": 202, "workflow": OTHER, "head": HEAD, "status": "planned"},
     ]
     assert fake.posts == []
     assert fake.cancels == []
@@ -596,7 +652,6 @@ def test_same_timestamp_higher_id_is_newer() -> None:
         {"head_branch": "other"},
         {"repository": {"full_name": FORK}},
         {"head_repository": {"full_name": REPO}},
-        {"path": OTHER},
         {"run_attempt": 2},
         {"run_attempt": 3},
         {"status": "completed", "conclusion": "success"},
@@ -614,18 +669,270 @@ def test_inexact_or_retry_runs_are_never_approved(changes: dict) -> None:
     assert not _marker_comments(fake, CANCEL_MARKER)
 
 
-def test_allowlist_approves_only_listed_workflow() -> None:
+def test_non_allowlisted_path_on_current_head_is_approved_and_recorded() -> None:
+    fake = FakeApproval()
+    fake.runs = [fake.run(id=202, path=OTHER)]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [202]
+    assert fake.cancels == []
+    assert "workflow:approve:202" in result.writes
+    assert not any(w.startswith("workflow:cancel:") for w in result.writes)
+    assert any(
+        item["run_id"] == 202 and item["status"] == "approved" for item in result.workflow_approvals
+    )
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 202, "workflow": OTHER}]
+    assert not _marker_comments(fake, CANCEL_MARKER)
+
+
+def test_older_commit_sha_is_approved_but_not_recorded() -> None:
+    fake = FakeApproval()
+    fake.pull_commits = [_clean_commit(sha=OLD), _clean_commit(sha=HEAD)]
+    fake.runs = [fake.run(id=301, head_sha=OLD, created_at="2026-09-04T11:00:00Z")]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [301]
+    assert fake.cancels == []
+    assert "workflow:approve:301" in result.writes
+    assert not any(w.startswith("workflow:cancel:") for w in result.writes)
+    assert any(
+        item["run_id"] == 301 and item["status"] == "approved" for item in result.workflow_approvals
+    )
+    assert not _marker_comments(fake, AUTH_MARKER)
+    assert not _marker_comments(fake, CANCEL_MARKER)
+
+
+def test_older_commit_sha_is_not_approved_when_newer_same_path_is_in_progress() -> None:
+    fake = FakeApproval()
+    fake.pull_commits = [_clean_commit(sha=OLD), _clean_commit(sha=HEAD)]
+    fake.runs = [
+        fake.run(id=301, head_sha=OLD, created_at="2026-09-04T11:00:00Z"),
+        fake.run(
+            id=302,
+            created_at="2026-09-05T11:00:00Z",
+            status="in_progress",
+            conclusion=None,
+        ),
+    ]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == []
+    assert fake.cancels == []
+    assert result.workflow_approvals == []
+    assert not any(w.startswith("workflow:") for w in result.writes)
+    assert not _marker_comments(fake, AUTH_MARKER)
+    assert not _marker_comments(fake, CANCEL_MARKER)
+
+
+def test_intermediate_sha_in_progress_blocks_older_hold_when_queries_are_scoped() -> None:
+    fake = FakeApproval()
+    fake.honor_run_query = True
+    fake.pull_commits = [_clean_commit(sha=OLD), _clean_commit(sha=MID), _clean_commit(sha=HEAD)]
+    fake.runs = [
+        fake.run(id=301, head_sha=OLD, created_at="2026-09-04T11:00:00Z"),
+        fake.run(
+            id=302,
+            head_sha=MID,
+            created_at="2026-09-05T11:00:00Z",
+            status="in_progress",
+            conclusion=None,
+        ),
+    ]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == []
+    assert fake.cancels == []
+    assert result.workflow_approvals == []
+    assert not any(w.startswith("workflow:") for w in result.writes)
+
+
+def test_foreign_sha_in_progress_does_not_block_older_hold() -> None:
+    fake = FakeApproval()
+    fake.honor_run_query = True
+    fake.pull_commits = [_clean_commit(sha=OLD), _clean_commit(sha=HEAD)]
+    fake.runs = [
+        fake.run(id=301, head_sha=OLD, created_at="2026-09-04T11:00:00Z"),
+        fake.run(
+            id=302,
+            head_sha=MID,
+            created_at="2026-09-05T11:00:00Z",
+            status="in_progress",
+            conclusion=None,
+        ),
+    ]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [301]
+    assert fake.cancels == []
+    assert any(item["run_id"] == 301 and item["status"] == "approved" for item in result.workflow_approvals)
+    assert not _marker_comments(fake, AUTH_MARKER)
+
+
+def test_completed_newer_intermediate_sha_does_not_block_older_hold() -> None:
+    fake = FakeApproval()
+    fake.honor_run_query = True
+    fake.pull_commits = [_clean_commit(sha=OLD), _clean_commit(sha=MID), _clean_commit(sha=HEAD)]
+    fake.runs = [
+        fake.run(id=301, head_sha=OLD, created_at="2026-09-04T11:00:00Z"),
+        fake.run(
+            id=302,
+            head_sha=MID,
+            created_at="2026-09-05T11:00:00Z",
+            status="completed",
+            conclusion="success",
+        ),
+    ]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [301]
+    assert fake.cancels == []
+    assert any(item["run_id"] == 301 and item["status"] == "approved" for item in result.workflow_approvals)
+    assert not _marker_comments(fake, AUTH_MARKER)
+
+
+def test_unstarted_cancel_does_not_replace_the_finished_sibling() -> None:
+    fake = FakeApproval()
+    fake.runs = [
+        fake.run(
+            id=301,
+            path=OTHER,
+            conclusion="action_required",
+            created_at="2026-09-05T10:00:00Z",
+        ),
+        fake.run(
+            id=302,
+            path=OTHER,
+            status="completed",
+            conclusion="success",
+            created_at="2026-09-05T11:00:00Z",
+        ),
+        fake.run(
+            id=303,
+            path=OTHER,
+            status="completed",
+            conclusion="cancelled",
+            created_at="2026-09-05T12:00:00Z",
+        ),
+    ]
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [301]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 302, "workflow": OTHER}]
+
+
+def test_foreign_pull_link_does_not_abort_the_other_hold() -> None:
+    fake = FakeApproval()
+    fake.runs = [
+        fake.run(
+            id=101,
+            pull_requests=[{
+                "number": 99,
+                "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                "base": {"sha": BASE},
+            }],
+        ),
+        fake.run(id=202, path=OTHER),
+    ]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [202]
+    assert not any(item["run_id"] == 101 for item in result.workflow_approvals)
+
+
+def test_ambiguous_pull_link_does_not_abort_the_other_hold() -> None:
+    fake = FakeApproval()
+    fake.runs = [
+        fake.run(id=101, pull_requests=[_link(), _link(number=2)]),
+        fake.run(id=202, path=OTHER),
+    ]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [202]
+    assert not any(item["run_id"] == 101 for item in result.workflow_approvals)
+
+
+def test_merge_run_without_expected_fork_is_excluded() -> None:
+    pull = {"head": {"sha": HEAD, "repo": {}}}
+    run = {"head_sha": MERGE, "head_repository": {"full_name": REPO}}
+    assert wa._counts_for_ready_inventory(run, pull, HEAD) is False
+
+
+def test_missing_head_repository_fails_closed_without_a_fork_name() -> None:
+    pull = {"head": {"sha": HEAD}}
+    with pytest.raises(GuardError, match="workflow run head repository missing"):
+        wa._counts_for_ready_inventory({"head_sha": MERGE}, pull, HEAD)
+
+
+def test_current_head_counts_without_a_repository() -> None:
+    assert wa._counts_for_ready_inventory({"head_sha": HEAD}, None, HEAD) is True
+
+
+def test_older_merge_hold_records_the_newer_finished_head_run() -> None:
+    fake = FakeApproval()
+    fake.merge_commit_sha = MERGE
+    fake.runs = [
+        fake.run(id=401, head_sha=MERGE, created_at="2026-09-05T10:00:00Z"),
+        fake.run(
+            id=102,
+            head_sha=HEAD,
+            conclusion="success",
+            created_at="2026-09-05T12:00:00Z",
+        ),
+    ]
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [401]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 102, "workflow": PATH}]
+
+
+def test_newer_merge_hold_is_the_recorded_run() -> None:
+    fake = FakeApproval()
+    fake.merge_commit_sha = MERGE
+    fake.runs = [
+        fake.run(
+            id=102,
+            head_sha=HEAD,
+            conclusion="success",
+            created_at="2026-09-05T10:00:00Z",
+        ),
+        fake.run(id=401, head_sha=MERGE, created_at="2026-09-05T12:00:00Z"),
+    ]
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [401]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 401, "workflow": PATH}]
+
+
+def test_merge_commit_sha_run_is_approved_and_recorded() -> None:
+    fake = FakeApproval()
+    fake.merge_commit_sha = MERGE
+    fake.runs = [fake.run(id=401, head_sha=MERGE)]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [401]
+    assert fake.cancels == []
+    assert "workflow:approve:401" in result.writes
+    assert not any(w.startswith("workflow:cancel:") for w in result.writes)
+    assert any(
+        item["run_id"] == 401 and item["status"] == "approved" for item in result.workflow_approvals
+    )
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 401, "workflow": PATH}]
+    assert not _marker_comments(fake, CANCEL_MARKER)
+
+
+def test_allowlist_does_not_filter_approval() -> None:
     fake = FakeApproval()
     fake.runs = [
         fake.run(id=101),
         fake.run(id=202, path=OTHER),
     ]
     result = reconcile_pull(fake.api(), REPO, 1)
-    assert fake.posts == [101]
+    assert fake.posts == [101, 202]
     assert fake.cancels == []
     statuses = {item["run_id"]: item["status"] for item in result.workflow_approvals}
-    assert statuses == {101: "approved"}
+    assert statuses == {101: "approved", 202: "approved"}
     assert not _marker_comments(fake, CANCEL_MARKER)
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert {row["run_id"] for row in _comment_record(auths[0])["runs"]} == {101, 202}
 
 
 # --- pagination -------------------------------------------------------------
@@ -633,7 +940,7 @@ def test_allowlist_approves_only_listed_workflow() -> None:
 
 def test_pagination_boundary_reads_page_two_for_the_pending_run() -> None:
     fake = FakeApproval()
-    fake.runs = [fake.run(id=i, path=OTHER) for i in range(1, 101)]
+    fake.runs = [fake.run(id=i, event="push") for i in range(1, 101)]
     fake.runs.append(fake.run(id=101))
     result = reconcile_pull(fake.api(), REPO, 1)
     assert fake.posts == [101]
@@ -645,7 +952,7 @@ def test_pagination_boundary_reads_page_two_for_the_pending_run() -> None:
 
 def test_pagination_exact_page_does_not_fetch_another_page() -> None:
     fake = FakeApproval()
-    fake.runs = [fake.run(id=i, path=OTHER) for i in range(1, 100)]
+    fake.runs = [fake.run(id=i, event="push") for i in range(1, 100)]
     fake.runs.append(fake.run(id=100))
 
     def inventory(page: int) -> dict:
@@ -656,11 +963,11 @@ def test_pagination_exact_page_does_not_fetch_another_page() -> None:
     fake.inventory = inventory
     result = reconcile_pull(fake.api(), REPO, 1)
     assert fake.posts == [100]
-    # Approval reads the pull_request inventory, then reads the inventory without
-    # an event filter before POST for the stored run id, then the always-on
-    # manual-activation scan reads it again. None of these calls may request
-    # page 2 when total_count is 100.
-    assert fake.actions_pages == [1, 1, 1, 1]
+    # Each inventory is the head listing plus one branch listing per held or
+    # in-flight status. That pair runs again before POST, then the unfiltered
+    # sibling read and the manual-activation scan. None may request page 2
+    # when total_count is 100.
+    assert fake.actions_pages == [1] * 16
     assert 2 not in fake.actions_pages
     assert any(item["run_id"] == 100 and item["status"] == "approved" for item in result.workflow_approvals)
     assert fake.cancels == []
@@ -707,7 +1014,7 @@ def test_pagination_count_changed_between_pages_fails_closed() -> None:
         if page == 1:
             return {
                 "total_count": 101,
-                "workflow_runs": [FakeApproval.run(id=i, path=OTHER) for i in range(1, 101)],
+                "workflow_runs": [FakeApproval.run(id=i, event="push") for i in range(1, 101)],
             }
         return {"total_count": 102, "workflow_runs": [FakeApproval.run(id=101)]}
 
@@ -724,9 +1031,9 @@ def test_pagination_duplicate_id_across_pages_fails_closed() -> None:
         if page == 1:
             return {
                 "total_count": 101,
-                "workflow_runs": [FakeApproval.run(id=i, path=OTHER) for i in range(1, 101)],
+                "workflow_runs": [FakeApproval.run(id=i, event="push") for i in range(1, 101)],
             }
-        return {"total_count": 101, "workflow_runs": [FakeApproval.run(id=1, path=OTHER)]}
+        return {"total_count": 101, "workflow_runs": [FakeApproval.run(id=1, event="push")]}
 
     fake.inventory = inventory
     with pytest.raises(GuardError, match="duplicate"):
@@ -750,7 +1057,7 @@ def test_pagination_empty_page_and_bound_exceeded_fail_closed() -> None:
     def ten_short_pages(page: int) -> dict:
         return {
             "total_count": 150,
-            "workflow_runs": [FakeApproval.run(id=page * 100 + i, path=OTHER) for i in range(10)],
+            "workflow_runs": [FakeApproval.run(id=page * 100 + i, event="push") for i in range(10)],
         }
 
     fake = FakeApproval()
@@ -956,39 +1263,37 @@ def test_get_run_identity_change_fails_closed() -> None:
     assert fake.posts == []
 
 
-@pytest.mark.parametrize(
-    "what",
-    [
-        "missing",
-        "not-list",
-        "ambiguous",
-        "cross-pr",
-        "cross-head",
-        "cross-base",
-        "predates",
-    ],
-)
-def test_missing_ambiguous_and_cross_pr_links_fail_closed(what: str) -> None:
+@pytest.mark.parametrize("what", ["missing", "not-list", "predates"])
+def test_missing_and_stale_links_fail_closed(what: str) -> None:
     fake = FakeApproval()
     run = fake.runs[0]
     if what == "missing":
         del run["pull_requests"]
     elif what == "not-list":
         run["pull_requests"] = None
-    elif what == "ambiguous":
-        run["pull_requests"] = [_link(), _link(number=2)]
-    elif what == "cross-pr":
-        run["pull_requests"] = [_link(number=2)]
-    elif what == "cross-head":
-        run["pull_requests"] = [_link(head=BASE2)]
-    elif what == "cross-base":
-        run["pull_requests"] = [_link(base=BASE2)]
     else:
         run["pull_requests"] = [_link()]
         run["created_at"] = "2026-08-01T00:00:00Z"
     with pytest.raises(GuardError):
         reconcile_pull(fake.api(), REPO, 1)
     assert fake.posts == []
+
+
+@pytest.mark.parametrize("what", ["ambiguous", "cross-pr", "cross-head", "cross-base"])
+def test_mismatched_link_is_skipped(what: str) -> None:
+    fake = FakeApproval()
+    run = fake.runs[0]
+    if what == "ambiguous":
+        run["pull_requests"] = [_link(), _link(number=2)]
+    elif what == "cross-pr":
+        run["pull_requests"] = [_link(number=2)]
+    elif what == "cross-head":
+        run["pull_requests"] = [_link(head=BASE2)]
+    else:
+        run["pull_requests"] = [_link(base=BASE2)]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == []
+    assert result.workflow_approvals == []
 
 
 @pytest.mark.parametrize(
@@ -1174,7 +1479,6 @@ def test_auth_run_id_follows_newest_finished_run(conclusion: str) -> None:
 @pytest.mark.parametrize(
     "changes",
     [
-        {"status": "waiting", "conclusion": None},
         {"run_attempt": 2},
     ],
 )
