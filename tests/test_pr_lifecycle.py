@@ -257,6 +257,7 @@ class LifecycleAPI(ApprovalAPI):
         self.pull.update(draft=False, mergeable=True, node_id="PR_example")
         self.runs[0].update(check_suite_id=201, conclusion="success")
         self.checks = []
+        self.checks_by_sha = {}
         self.transitions = []
         self.graphql_error = False
         self.graphql_noop_draft = False
@@ -270,7 +271,14 @@ class LifecycleAPI(ApprovalAPI):
     def request_fn(self, method, url, body=None):
         path = urlparse(url).path
         if method == "GET" and path.endswith("/check-runs"):
-            return 200, {"total_count": len(self.checks), "check_runs": copy.deepcopy(self.checks)}, {}
+            sha = path.split("/commits/")[1].split("/")[0]
+            if sha in self.checks_by_sha:
+                checks = self.checks_by_sha[sha]
+            elif sha == self.pull["head"]["sha"]:
+                checks = self.checks
+            else:
+                checks = []
+            return 200, {"total_count": len(checks), "check_runs": copy.deepcopy(checks)}, {}
         if method == "POST" and path == "/graphql":
             payload = json.loads(body)
             if "reviewThreads" in payload.get("query", ""):
@@ -1642,6 +1650,84 @@ def test_merge_commit_hold_blocks_ready_until_it_finishes():
     assert fake.transitions == [True]
     assert "CI not green: .github/workflows/test.yml (queued)" in result.lifecycle["reasons"]
     assert not any(str(reason).startswith("Missing required CI") for reason in result.lifecycle["reasons"])
+
+
+def test_merge_commit_required_check_is_read_from_that_commit():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.pull["draft"] = True
+    fake.runs[0].update(
+        head_sha=merge,
+        status="completed",
+        conclusion="success",
+        check_suite_id=401,
+    )
+    fake.config["lifecycle"]["required_checks"] = {PATH: ["Test"]}
+    fake.set_pr_guard_config(fake.config)
+    fake.checks_by_sha[merge] = [{
+        "id": 22,
+        "name": "Test",
+        "check_suite": {"id": 401},
+        "status": "completed",
+        "conclusion": "success",
+    }]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert result.lifecycle["action"] == "ready"
+    assert fake.transitions == [False]
+    assert not any("Required CI check not green" in str(reason) for reason in result.lifecycle["reasons"])
+
+
+def test_merge_commit_required_check_failure_blocks_ready():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.pull["draft"] = True
+    fake.runs[0].update(
+        head_sha=merge,
+        status="completed",
+        conclusion="success",
+        check_suite_id=401,
+    )
+    fake.config["lifecycle"]["required_checks"] = {PATH: ["Test"]}
+    fake.set_pr_guard_config(fake.config)
+    fake.checks_by_sha[merge] = [{
+        "id": 22,
+        "name": "Test",
+        "check_suite": {"id": 401},
+        "status": "completed",
+        "conclusion": "failure",
+    }]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert result.lifecycle["action"] == "unchanged"
+    assert fake.transitions == []
+    assert "Required CI check not green: .github/workflows/test.yml / Test" in result.lifecycle["reasons"]
+
+
+def test_merge_commit_status_pending_blocks_ready():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.runs[0].update(
+        head_sha=merge,
+        status="completed",
+        conclusion="success",
+        check_suite_id=401,
+    )
+    fake.statuses.append({"sha": merge, "context": "external", "state": "pending"})
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert "CI status not green: external (pending)" in result.lifecycle["reasons"]
+    assert fake.transitions == [True]
+
+
+def test_merge_sha_run_without_head_repository_fails_closed():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.runs[0].update(head_sha=merge, status="completed", conclusion="success")
+    fake.runs[0].pop("head_repository")
+    with pytest.raises(GuardError, match="workflow run head repository missing"):
+        reconcile_pull(fake.api(), REPO, 1)
 
 
 def test_base_repository_merge_sha_failure_does_not_hide_head_success():

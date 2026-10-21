@@ -244,8 +244,10 @@ def _counts_for_ready_inventory(
 
     The current head SHA is already unique to this pull request. The merge
     SHA can also belong to a base-repository run created when a different
-    pull request merged.
+    pull request merged. A merge-commit run that does not name a head
+    repository fails closed.
     """
+    from .a38_guard import GuardError
     if run.get("head_sha") == head_sha or not isinstance(pull, Mapping):
         return True
     head = pull.get("head")
@@ -257,10 +259,10 @@ def _counts_for_ready_inventory(
         return True
     repository = run.get("head_repository")
     if not isinstance(repository, Mapping):
-        return True
+        raise GuardError("workflow run head repository missing")
     name = repository.get("full_name")
     if not isinstance(name, str) or name == "":
-        return True
+        raise GuardError("workflow run head repository missing")
     return name == expected
 
 

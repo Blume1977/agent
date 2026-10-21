@@ -763,7 +763,8 @@ def ci_state(
     hide an older same-head result of that workflow. A hold approved earlier
     in this reconcile is already queued and is judged as still going when
     its SHA is the current head or the merge commit. An older commit of the
-    branch is not part of this inventory. The newest remaining run is judged
+    branch is not part of this inventory. Check runs and commit statuses are
+    read for both of those SHAs. The newest remaining run is judged
     by the existing rule: success is green, and failure, timeout,
     cancellation after a job started, and a run that is still going are not.
     Required workflows, allowlisted workflows, and the same hold while
@@ -840,7 +841,18 @@ def ci_state(
     # An old run's check suite must not override the latest workflow result.
     excluded = (ignored_suites | superseded_suites) - {None}
     excluded -= {r.get("check_suite_id") for r in latest.values()}
-    checks = _checks(api, assessment.repo, assessment.head_sha)
+    check_shas = [assessment.head_sha]
+    if isinstance(merge, str) and merge not in {"", assessment.head_sha}:
+        check_shas.append(merge)
+    checks: list[Mapping] = []
+    seen_check_ids: set[int] = set()
+    for sha in check_shas:
+        for check in _checks(api, assessment.repo, sha):
+            ident = check.get("id")
+            if type(ident) is not int or ident in seen_check_ids:
+                raise GuardError("CI check inventory has invalid or duplicate IDs")
+            seen_check_ids.add(ident)
+            checks.append(check)
     accepted_required = (
         {"success", "skipped", "neutral"}
         if accept_skipped_required
@@ -911,15 +923,21 @@ def ci_state(
         acceptable = check.get("conclusion") == "success" or (successful_suite and check.get("conclusion") in {"skipped", "neutral"})
         if check.get("status") != "completed" or not acceptable:
             reasons.append(f"CI check not green: {check.get('name')} ({check.get('conclusion') or check.get('status') or 'unknown'})")
-    statuses = api.paginate(f"/repos/{assessment.repo}/commits/{assessment.head_sha}/statuses")
-    seen = set()
-    for status in statuses:  # GitHub returns newest first.
-        context = _field(status, "context")
-        if not isinstance(context, str):
-            raise GuardError("CI status inventory invalid")
-        if context not in seen and status.get("state") != "success":
-            reasons.append(f"CI status not green: {context} ({status.get('state') or 'unknown'})")
-        seen.add(context)
+    status_shas = [assessment.head_sha]
+    if isinstance(merge, str) and merge not in {"", assessment.head_sha}:
+        status_shas.append(merge)
+    for sha in status_shas:
+        statuses = api.paginate(f"/repos/{assessment.repo}/commits/{sha}/statuses")
+        seen = set()
+        for status in statuses:  # GitHub returns newest first within one commit.
+            context = _field(status, "context")
+            if not isinstance(context, str):
+                raise GuardError("CI status inventory invalid")
+            if context not in seen and status.get("state") != "success":
+                reason = f"CI status not green: {context} ({status.get('state') or 'unknown'})"
+                if reason not in reasons:
+                    reasons.append(reason)
+            seen.add(context)
     return reasons, latest
 
 
