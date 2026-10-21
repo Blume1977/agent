@@ -98,6 +98,19 @@ class ApprovalAPI(FakeAPI):
         return status, copy.deepcopy(data), headers
 
 
+def test_unknown_workflow_path_on_this_head_is_approved():
+    fake = ApprovalAPI()
+    unknown = ".github/workflows/unknown.yml"
+    fake.runs = [fake.run(path=unknown)]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert result.ok
+    assert fake.posts == [101]
+    assert fake.cancels == []
+    assert result.workflow_approvals == [
+        {"run_id": 101, "workflow": unknown, "head": HEAD, "status": "approved"}
+    ]
+
+
 def test_real_reconcile_approves_initial_private_fork_run_and_is_idempotent():
     fake = ApprovalAPI()
     result = reconcile_pull(fake.api(), REPO, 1)
@@ -150,7 +163,6 @@ def test_no_approval_without_authorization(case):
     {"status": "queued", "conclusion": None}, {"conclusion": "success"}, {"conclusion": "failure"},
     {"run_attempt": 2}, {"event": "push"}, {"head_sha": BASE}, {"head_branch": "other"},
     {"repository": {"full_name": "other/repo"}}, {"head_repository": {"full_name": "other/fork"}},
-    {"path": ".github/workflows/unknown.yml"},
 ])
 def test_ineligible_runs_are_never_approved(changes):
     fake = ApprovalAPI()
