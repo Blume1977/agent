@@ -748,6 +748,25 @@ def _workflow_run_never_started(api: Any, assessment: Any, run: Mapping) -> bool
     return False
 
 
+def _unstarted_non_allowlisted_hold(
+    api: Any,
+    assessment: Any,
+    run: Mapping,
+    *,
+    required: set[str],
+    approval_allowlist: frozenset[str] | None,
+) -> bool:
+    """The narrower Ready rule: this hold is not the result Ready compares."""
+    path = run.get("path")
+    if not isinstance(path, str) or path in required:
+        return False
+    if approval_allowlist is None or path in approval_allowlist:
+        return False
+    if run.get("conclusion") not in {"action_required", "cancelled"}:
+        return False
+    return _workflow_run_never_started(api, assessment, run)
+
+
 def ci_state(
     api: Any,
     assessment: Any,
@@ -763,8 +782,14 @@ def ci_state(
     hide an older same-head result of that workflow. A hold approved earlier
     in this reconcile is already queued and is judged as still going when
     its SHA is the current head or the merge commit. An older commit of the
-    branch is not part of this inventory. Check runs and commit statuses are
-    read for both of those SHAs. The newest remaining run is judged
+    branch is not part of this inventory. A run whose head repository is not
+    this pull request's head repository is not either. A merge-commit run
+    that does not name a head repository fails closed. When this pull request
+    does not name its fork, a merge-commit run that names a repository is
+    excluded. Check runs and commit statuses are read for the current head
+    and for the merge commit when that SHA differs. A check that is not
+    success on either SHA blocks. A success on one SHA does not hide a
+    non-success of the same name on the other. The newest remaining run is judged
     by the existing rule: success is green, and failure, timeout,
     cancellation after a job started, and a run that is still going are not.
     Required workflows, allowlisted workflows, and the same hold while
@@ -815,12 +840,9 @@ def ci_state(
                 superseded_suites.add(run.get("check_suite_id"))
                 continue
             # Skip a non-allowlisted never-started hold; the first other run decides.
-            if (
-                path not in required
-                and approval_allowlist is not None
-                and path not in approval_allowlist
-                and run.get("conclusion") in {"action_required", "cancelled"}
-                and _workflow_run_never_started(api, assessment, run)
+            if _unstarted_non_allowlisted_hold(
+                api, assessment, run,
+                required=required, approval_allowlist=approval_allowlist,
             ):
                 superseded_suites.add(run.get("check_suite_id"))
                 continue
@@ -844,15 +866,17 @@ def ci_state(
     check_shas = [assessment.head_sha]
     if isinstance(merge, str) and merge not in {"", assessment.head_sha}:
         check_shas.append(merge)
-    checks: list[Mapping] = []
+    checks_by_sha: list[list[Mapping]] = []
     seen_check_ids: set[int] = set()
     for sha in check_shas:
-        for check in _checks(api, assessment.repo, sha):
+        sha_checks = _checks(api, assessment.repo, sha)
+        for check in sha_checks:
             ident = check.get("id")
             if type(ident) is not int or ident in seen_check_ids:
                 raise GuardError("CI check inventory has invalid or duplicate IDs")
             seen_check_ids.add(ident)
-            checks.append(check)
+        checks_by_sha.append(sha_checks)
+    checks = [check for sha_checks in checks_by_sha for check in sha_checks]
     accepted_required = (
         {"success", "skipped", "neutral"}
         if accept_skipped_required
@@ -894,35 +918,42 @@ def ci_state(
                 for check in latest_by_name.values()
             ):
                 reasons.append(f"Required CI check not green: {path} / {name}")
-    newest: dict[tuple, Mapping] = {}
-    for check in checks:
-        if _field(check, "check_suite", "id") in excluded:
-            continue
-        key = (_field(check, "app", "id"), check.get("name"))
-        if key not in newest or check["id"] > newest[key]["id"]:
-            newest[key] = check
-    for check in newest.values():
-        name = check.get("name")
-        conclusion = check.get("conclusion")
-        # GitHub records a skipped placeholder when a matrix job never
-        # instantiates (job-level ``if:`` false). Optional skipped jobs that
-        # are not listed in required_checks are not failed tests. Pending,
-        # cancelled, and failed independent checks still block.
-        if conclusion in {"skipped", "neutral"} and (
-            is_unexpanded_github_expression(name)
-            or not check_name_is_required(name, config)
-            or accept_skipped_required
-        ):
-            continue
-        # A workflow can intentionally skip individual conditional jobs while
-        # succeeding overall. Standalone skipped required checks cannot establish green.
-        suite = _field(check, "check_suite", "id")
-        successful_suite = suite is not None and any(r.get("check_suite_id") == suite
-            and r.get("status") == "completed" and (r.get("conclusion") == "success"
-                or (path not in required and r.get("conclusion") in {"skipped", "neutral"})) for path, r in latest.items())
-        acceptable = check.get("conclusion") == "success" or (successful_suite and check.get("conclusion") in {"skipped", "neutral"})
-        if check.get("status") != "completed" or not acceptable:
-            reasons.append(f"CI check not green: {check.get('name')} ({check.get('conclusion') or check.get('status') or 'unknown'})")
+    for sha_checks in checks_by_sha:
+        newest: dict[tuple, Mapping] = {}
+        for check in sha_checks:
+            if _field(check, "check_suite", "id") in excluded:
+                continue
+            key = (_field(check, "app", "id"), check.get("name"))
+            if key not in newest or check["id"] > newest[key]["id"]:
+                newest[key] = check
+        for check in newest.values():
+            name = check.get("name")
+            conclusion = check.get("conclusion")
+            # GitHub records a skipped placeholder when a matrix job never
+            # instantiates (job-level ``if:`` false). Optional skipped jobs that
+            # are not listed in required_checks are not failed tests. Pending,
+            # cancelled, and failed independent checks still block. A success
+            # on the other SHA does not hide a non-success here.
+            if conclusion in {"skipped", "neutral"} and (
+                is_unexpanded_github_expression(name)
+                or not check_name_is_required(name, config)
+                or accept_skipped_required
+            ):
+                continue
+            # A workflow can intentionally skip individual conditional jobs while
+            # succeeding overall. Standalone skipped required checks cannot establish green.
+            suite = _field(check, "check_suite", "id")
+            successful_suite = suite is not None and any(r.get("check_suite_id") == suite
+                and r.get("status") == "completed" and (r.get("conclusion") == "success"
+                    or (path not in required and r.get("conclusion") in {"skipped", "neutral"})) for path, r in latest.items())
+            acceptable = check.get("conclusion") == "success" or (successful_suite and check.get("conclusion") in {"skipped", "neutral"})
+            if check.get("status") != "completed" or not acceptable:
+                reason = (
+                    f"CI check not green: {check.get('name')} "
+                    f"({check.get('conclusion') or check.get('status') or 'unknown'})"
+                )
+                if reason not in reasons:
+                    reasons.append(reason)
     status_shas = [assessment.head_sha]
     if isinstance(merge, str) and merge not in {"", assessment.head_sha}:
         status_shas.append(merge)

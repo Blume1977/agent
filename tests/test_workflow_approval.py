@@ -786,6 +786,82 @@ def test_completed_newer_intermediate_sha_does_not_block_older_hold() -> None:
     assert not _marker_comments(fake, AUTH_MARKER)
 
 
+def test_unstarted_cancel_does_not_replace_the_finished_sibling() -> None:
+    fake = FakeApproval()
+    fake.runs = [
+        fake.run(
+            id=301,
+            path=OTHER,
+            conclusion="action_required",
+            created_at="2026-09-05T10:00:00Z",
+        ),
+        fake.run(
+            id=302,
+            path=OTHER,
+            status="completed",
+            conclusion="success",
+            created_at="2026-09-05T11:00:00Z",
+        ),
+        fake.run(
+            id=303,
+            path=OTHER,
+            status="completed",
+            conclusion="cancelled",
+            created_at="2026-09-05T12:00:00Z",
+        ),
+    ]
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [301]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 302, "workflow": OTHER}]
+
+
+def test_foreign_pull_link_does_not_abort_the_other_hold() -> None:
+    fake = FakeApproval()
+    fake.runs = [
+        fake.run(
+            id=101,
+            pull_requests=[{
+                "number": 99,
+                "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                "base": {"sha": BASE},
+            }],
+        ),
+        fake.run(id=202, path=OTHER),
+    ]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [202]
+    assert not any(item["run_id"] == 101 for item in result.workflow_approvals)
+
+
+def test_ambiguous_pull_link_does_not_abort_the_other_hold() -> None:
+    fake = FakeApproval()
+    fake.runs = [
+        fake.run(id=101, pull_requests=[_link(), _link(number=2)]),
+        fake.run(id=202, path=OTHER),
+    ]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [202]
+    assert not any(item["run_id"] == 101 for item in result.workflow_approvals)
+
+
+def test_merge_run_without_expected_fork_is_excluded() -> None:
+    pull = {"head": {"sha": HEAD, "repo": {}}}
+    run = {"head_sha": MERGE, "head_repository": {"full_name": REPO}}
+    assert wa._counts_for_ready_inventory(run, pull, HEAD) is False
+
+
+def test_missing_head_repository_fails_closed_without_a_fork_name() -> None:
+    pull = {"head": {"sha": HEAD}}
+    with pytest.raises(GuardError, match="workflow run head repository missing"):
+        wa._counts_for_ready_inventory({"head_sha": MERGE}, pull, HEAD)
+
+
+def test_current_head_counts_without_a_repository() -> None:
+    assert wa._counts_for_ready_inventory({"head_sha": HEAD}, None, HEAD) is True
+
+
 def test_older_merge_hold_records_the_newer_finished_head_run() -> None:
     fake = FakeApproval()
     fake.merge_commit_sha = MERGE
@@ -1187,39 +1263,37 @@ def test_get_run_identity_change_fails_closed() -> None:
     assert fake.posts == []
 
 
-@pytest.mark.parametrize(
-    "what",
-    [
-        "missing",
-        "not-list",
-        "ambiguous",
-        "cross-pr",
-        "cross-head",
-        "cross-base",
-        "predates",
-    ],
-)
-def test_missing_ambiguous_and_cross_pr_links_fail_closed(what: str) -> None:
+@pytest.mark.parametrize("what", ["missing", "not-list", "predates"])
+def test_missing_and_stale_links_fail_closed(what: str) -> None:
     fake = FakeApproval()
     run = fake.runs[0]
     if what == "missing":
         del run["pull_requests"]
     elif what == "not-list":
         run["pull_requests"] = None
-    elif what == "ambiguous":
-        run["pull_requests"] = [_link(), _link(number=2)]
-    elif what == "cross-pr":
-        run["pull_requests"] = [_link(number=2)]
-    elif what == "cross-head":
-        run["pull_requests"] = [_link(head=BASE2)]
-    elif what == "cross-base":
-        run["pull_requests"] = [_link(base=BASE2)]
     else:
         run["pull_requests"] = [_link()]
         run["created_at"] = "2026-08-01T00:00:00Z"
     with pytest.raises(GuardError):
         reconcile_pull(fake.api(), REPO, 1)
     assert fake.posts == []
+
+
+@pytest.mark.parametrize("what", ["ambiguous", "cross-pr", "cross-head", "cross-base"])
+def test_mismatched_link_is_skipped(what: str) -> None:
+    fake = FakeApproval()
+    run = fake.runs[0]
+    if what == "ambiguous":
+        run["pull_requests"] = [_link(), _link(number=2)]
+    elif what == "cross-pr":
+        run["pull_requests"] = [_link(number=2)]
+    elif what == "cross-head":
+        run["pull_requests"] = [_link(head=BASE2)]
+    else:
+        run["pull_requests"] = [_link(base=BASE2)]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == []
+    assert result.workflow_approvals == []
 
 
 @pytest.mark.parametrize(

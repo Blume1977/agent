@@ -212,7 +212,7 @@ def test_change_before_write_rejects_stale_authorization(what):
     assert not fake.posts
 
 
-@pytest.mark.parametrize("what", ["ambiguous", "retargeted", "reopened", "older", "foreign_link"])
+@pytest.mark.parametrize("what", ["ambiguous", "retargeted", "reopened", "older"])
 def test_private_fork_association_must_be_proven(what):
     fake = ApprovalAPI()
     if what == "ambiguous":
@@ -222,13 +222,19 @@ def test_private_fork_association_must_be_proven(what):
     elif what in {"retargeted", "reopened"}:
         fake.events = [{"event": "base_ref_changed" if what == "retargeted" else "reopened",
                         "created_at": "2026-09-05T11:30:00Z"}]
-    elif what == "older":
-        fake.runs[0]["created_at"] = "2026-08-01T00:00:00Z"
     else:
-        fake.runs[0]["pull_requests"] = [{"number": 2, "head": {"sha": HEAD}, "base": {"sha": BASE}}]
+        fake.runs[0]["created_at"] = "2026-08-01T00:00:00Z"
     with pytest.raises(GuardError):
         reconcile_pull(fake.api(), REPO, 1)
     assert not fake.posts
+
+
+def test_private_fork_foreign_link_is_not_approved():
+    fake = ApprovalAPI()
+    fake.runs[0]["pull_requests"] = [{"number": 2, "head": {"sha": HEAD}, "base": {"sha": BASE}}]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == []
+    assert result.workflow_approvals == []
 
 
 def test_private_fork_diverged_base_still_approves():

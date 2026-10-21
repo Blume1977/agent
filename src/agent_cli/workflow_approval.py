@@ -248,21 +248,21 @@ def _counts_for_ready_inventory(
     repository fails closed.
     """
     from .a38_guard import GuardError
-    if run.get("head_sha") == head_sha or not isinstance(pull, Mapping):
+    if run.get("head_sha") == head_sha:
         return True
-    head = pull.get("head")
-    if not isinstance(head, Mapping):
-        return True
-    repo = head.get("repo")
-    expected = repo.get("full_name") if isinstance(repo, Mapping) else None
-    if not isinstance(expected, str) or expected == "":
-        return True
+    if not isinstance(pull, Mapping):
+        return False
     repository = run.get("head_repository")
     if not isinstance(repository, Mapping):
         raise GuardError("workflow run head repository missing")
     name = repository.get("full_name")
     if not isinstance(name, str) or name == "":
         raise GuardError("workflow run head repository missing")
+    head = pull.get("head")
+    repo = head.get("repo") if isinstance(head, Mapping) else None
+    expected = repo.get("full_name") if isinstance(repo, Mapping) else None
+    if not isinstance(expected, str) or expected == "":
+        return False
     return name == expected
 
 
@@ -272,6 +272,37 @@ def _records_ci_auth(run: Mapping[str, Any], pull: Mapping[str, Any]) -> bool:
         return True
     merge = _merge_sha(pull)
     return merge is not None and sha == merge
+
+
+def _foreign_or_ambiguous_pull_link(
+    run: Mapping[str, Any], pull: Mapping[str, Any], pull_shas: set[str] | None,
+) -> bool:
+    """A linked run for another pull request is not approved.
+
+    Skipping it leaves the other held runs of this pull request to be
+    approved. An empty association list stays with the private-fork proof.
+    """
+    links = run.get("pull_requests")
+    if not isinstance(links, list) or not links:
+        return False
+    if len(links) != 1 or not isinstance(links[0], Mapping):
+        return True
+    linked = links[0]
+    head = pull["head"]
+    same_number = linked.get("number") == pull["number"]
+    same_head = _field(linked, "head", "sha") == head["sha"]
+    same_base = _field(linked, "base", "sha") == pull["base"]["sha"]
+    if same_number and same_head and same_base:
+        return False
+    if (
+        same_number
+        and _historical_pull_sha(run, pull, pull_shas)
+        and run.get("head_branch") == head["ref"]
+        and isinstance(run.get("head_repository"), Mapping)
+        and run["head_repository"].get("full_name") == head["repo"]["full_name"]
+    ):
+        return False
+    return True
 
 
 def _belongs_to_pull(
@@ -395,6 +426,8 @@ def approve_workflow_runs(api: Any, assessment: Any, *, dry_run: bool = False) -
             raise GuardError("workflow run identity changed before approval")
         if not _pending(run):
             continue
+        if _foreign_or_ambiguous_pull_link(run, pull, commit_shas):
+            continue
         _belongs_to_pull(api, run, pull, pull_shas=commit_shas)
         # Last live checks immediately before the irreversible authorization.
         final = fetch_pull(api, assessment.repo, assessment.pr)
@@ -425,10 +458,40 @@ def approve_workflow_runs(api: Any, assessment: Any, *, dry_run: bool = False) -
                 if merge is not None and merge != assessment.head_sha:
                     allowed_shas.add(merge)
                     groups.append(_runs(api, assessment.repo, merge, event=None))
-                siblings = [
-                    item for item in _merge_listed_runs(*groups)
-                    if _counts_for_ready_inventory(item, pull, assessment.head_sha)
-                ]
+                from .pr_lifecycle import _unstarted_non_allowlisted_hold
+                lifecycle = {}
+                trusted_config = getattr(config_now, "config", None)
+                if isinstance(trusted_config, Mapping):
+                    raw_lifecycle = trusted_config.get("lifecycle")
+                    if isinstance(raw_lifecycle, Mapping):
+                        lifecycle = raw_lifecycle
+                required_paths = set(lifecycle.get("required_workflows") or [])
+                label_names = {
+                    _field(label, "name")
+                    for label in pull.get("labels", [])
+                    if isinstance(label, Mapping)
+                }
+                for condition in lifecycle.get("conditional_workflows") or []:
+                    if not isinstance(condition, Mapping):
+                        continue
+                    bases = condition.get("base_branches") or []
+                    labels_any = condition.get("labels_any") or []
+                    workflow = condition.get("workflow")
+                    if isinstance(workflow, str) and (
+                        assessment.base_ref in bases or label_names.intersection(labels_any)
+                    ):
+                        required_paths.add(workflow)
+                allowlist = frozenset(config["workflows"])
+                siblings = []
+                for item in _merge_listed_runs(*groups):
+                    if not _counts_for_ready_inventory(item, pull, assessment.head_sha):
+                        continue
+                    if _unstarted_non_allowlisted_hold(
+                        api, assessment, item,
+                        required=required_paths, approval_allowlist=allowlist,
+                    ):
+                        continue
+                    siblings.append(item)
                 recorded_id = _recorded_authorization_run_id(
                     run, siblings, assessment.pr, allowed_shas=allowed_shas
                 )

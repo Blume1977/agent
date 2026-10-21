@@ -1720,6 +1720,52 @@ def test_merge_commit_status_pending_blocks_ready():
     assert fake.transitions == [True]
 
 
+def test_success_on_one_sha_does_not_hide_a_failure_on_the_other():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.checks_by_sha[HEAD] = [{
+        "id": 10,
+        "name": "lint",
+        "check_suite": {"id": 900},
+        "status": "completed",
+        "conclusion": "failure",
+    }]
+    fake.checks_by_sha[merge] = [{
+        "id": 20,
+        "name": "lint",
+        "check_suite": {"id": 901},
+        "status": "completed",
+        "conclusion": "success",
+    }]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert "CI check not green: lint (failure)" in result.lifecycle["reasons"]
+    assert fake.transitions == [True]
+
+
+def test_failure_on_the_merge_sha_is_not_hidden_by_a_newer_head_success():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.checks_by_sha[HEAD] = [{
+        "id": 20,
+        "name": "lint",
+        "check_suite": {"id": 901},
+        "status": "completed",
+        "conclusion": "success",
+    }]
+    fake.checks_by_sha[merge] = [{
+        "id": 10,
+        "name": "lint",
+        "check_suite": {"id": 900},
+        "status": "completed",
+        "conclusion": "failure",
+    }]
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert "CI check not green: lint (failure)" in result.lifecycle["reasons"]
+    assert fake.transitions == [True]
+
+
 def test_merge_sha_run_without_head_repository_fails_closed():
     fake = LifecycleAPI()
     merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
