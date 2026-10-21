@@ -242,7 +242,34 @@ def approve_workflow_runs(api: Any, assessment: Any, *, dry_run: bool = False) -
             recorded_id = _recorded_authorization_run_id(run, siblings, assessment.pr)
             status, _, _ = api.request("POST", f"/repos/{assessment.repo}/actions/runs/{run['id']}/approve", retry=False)
             if status != 201:
-                raise GuardError(f"workflow approval HTTP {status}; Actions write permission is required")
+                if status != 403:
+                    raise GuardError(
+                        f"workflow approval HTTP {status}; Actions write permission is required"
+                    )
+                # A concurrent guard run may have released this run already. GitHub
+                # answers 403 for an approve call on a run that no longer waits. Decide
+                # that from the run's own state, for any attempt: _pending excludes a
+                # later attempt by design, which would misread one that is still waiting.
+                current = api.get_json(
+                    f"/repos/{assessment.repo}/actions/runs/{run['id']}"
+                )
+                if not isinstance(current, Mapping) or current.get("id") != run["id"]:
+                    raise GuardError(
+                        "workflow run identity changed before approval"
+                    )
+                if (
+                    current.get("status") == "completed"
+                    and current.get("conclusion") == "action_required"
+                ):
+                    raise GuardError(
+                        f"workflow approval HTTP {status}; Actions write permission is required"
+                    )
+                # Nothing was authorised here, so record the outcome without claiming an
+                # authorisation this guard did not perform.
+                assessment.writes.append(f"workflow:approve:{run['id']}:already-released")
+                result.append({"run_id": run["id"], "workflow": run["path"],
+                               "head": assessment.head_sha, "status": "already-released"})
+                continue
             assessment.writes.append(f"workflow:approve:{run['id']}")
             auth_comment = record_workflow_approval(
                 api, assessment, run, create=auth_comment is None, existing=auth_comment,
