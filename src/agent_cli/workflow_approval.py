@@ -237,6 +237,33 @@ def _historical_pull_sha(
     return pull_shas is not None and sha in pull_shas
 
 
+def _counts_for_ready_inventory(
+    run: Mapping[str, Any], pull: Mapping[str, Any] | None, head_sha: str
+) -> bool:
+    """A merge-SHA run from another repository is not this pull request.
+
+    The current head SHA is already unique to this pull request. The merge
+    SHA can also belong to a base-repository run created when a different
+    pull request merged.
+    """
+    if run.get("head_sha") == head_sha or not isinstance(pull, Mapping):
+        return True
+    head = pull.get("head")
+    if not isinstance(head, Mapping):
+        return True
+    repo = head.get("repo")
+    expected = repo.get("full_name") if isinstance(repo, Mapping) else None
+    if not isinstance(expected, str) or expected == "":
+        return True
+    repository = run.get("head_repository")
+    if not isinstance(repository, Mapping):
+        return True
+    name = repository.get("full_name")
+    if not isinstance(name, str) or name == "":
+        return True
+    return name == expected
+
+
 def _records_ci_auth(run: Mapping[str, Any], pull: Mapping[str, Any]) -> bool:
     sha = run.get("head_sha")
     if sha == pull["head"]["sha"]:
@@ -390,8 +417,19 @@ def approve_workflow_runs(api: Any, assessment: Any, *, dry_run: bool = False) -
             record_auth = _records_ci_auth(run, pull)
             recorded_id = run["id"]
             if record_auth:
-                siblings = _runs(api, assessment.repo, assessment.head_sha, event=None)
-                recorded_id = _recorded_authorization_run_id(run, siblings, assessment.pr)
+                allowed_shas = {assessment.head_sha}
+                groups = [_runs(api, assessment.repo, assessment.head_sha, event=None)]
+                merge = _merge_sha(pull)
+                if merge is not None and merge != assessment.head_sha:
+                    allowed_shas.add(merge)
+                    groups.append(_runs(api, assessment.repo, merge, event=None))
+                siblings = [
+                    item for item in _merge_listed_runs(*groups)
+                    if _counts_for_ready_inventory(item, pull, assessment.head_sha)
+                ]
+                recorded_id = _recorded_authorization_run_id(
+                    run, siblings, assessment.pr, allowed_shas=allowed_shas
+                )
             status, _, _ = api.request("POST", f"/repos/{assessment.repo}/actions/runs/{run['id']}/approve", retry=False)
             if status != 201:
                 if status != 403:

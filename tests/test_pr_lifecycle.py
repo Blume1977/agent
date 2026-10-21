@@ -1630,6 +1630,39 @@ def test_non_allowlisted_hold_is_approved_when_cancel_would_clear():
     assert fake.cancels == []
 
 
+def test_merge_commit_hold_blocks_ready_until_it_finishes():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.runs[0].update(status="completed", conclusion="action_required", head_sha=merge)
+    fake.cancel_clears_hold = False
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert "workflow:approve:101" in result.writes
+    assert result.lifecycle["action"] == "draft"
+    assert fake.transitions == [True]
+    assert "CI not green: .github/workflows/test.yml (queued)" in result.lifecycle["reasons"]
+    assert not any(str(reason).startswith("Missing required CI") for reason in result.lifecycle["reasons"])
+
+
+def test_base_repository_merge_sha_failure_does_not_hide_head_success():
+    fake = LifecycleAPI()
+    merge = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    fake.pull["merge_commit_sha"] = merge
+    fake.pull["draft"] = True
+    fake.runs.append(fake.run(
+        id=501,
+        head_sha=merge,
+        conclusion="failure",
+        status="completed",
+        created_at="2026-09-05T13:00:00Z",
+        head_repository={"full_name": REPO},
+    ))
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert result.lifecycle["action"] == "ready"
+    assert fake.transitions == [False]
+    assert not any("test.yml" in str(reason) for reason in result.lifecycle["reasons"])
+
+
 def test_non_allowlisted_failure_still_blocks_ready():
     fake = LifecycleAPI()
     fake.pull["draft"] = True

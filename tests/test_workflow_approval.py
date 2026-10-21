@@ -786,6 +786,44 @@ def test_completed_newer_intermediate_sha_does_not_block_older_hold() -> None:
     assert not _marker_comments(fake, AUTH_MARKER)
 
 
+def test_older_merge_hold_records_the_newer_finished_head_run() -> None:
+    fake = FakeApproval()
+    fake.merge_commit_sha = MERGE
+    fake.runs = [
+        fake.run(id=401, head_sha=MERGE, created_at="2026-09-05T10:00:00Z"),
+        fake.run(
+            id=102,
+            head_sha=HEAD,
+            conclusion="success",
+            created_at="2026-09-05T12:00:00Z",
+        ),
+    ]
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [401]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 102, "workflow": PATH}]
+
+
+def test_newer_merge_hold_is_the_recorded_run() -> None:
+    fake = FakeApproval()
+    fake.merge_commit_sha = MERGE
+    fake.runs = [
+        fake.run(
+            id=102,
+            head_sha=HEAD,
+            conclusion="success",
+            created_at="2026-09-05T10:00:00Z",
+        ),
+        fake.run(id=401, head_sha=MERGE, created_at="2026-09-05T12:00:00Z"),
+    ]
+    reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [401]
+    auths = _marker_comments(fake, AUTH_MARKER)
+    assert len(auths) == 1
+    assert _comment_record(auths[0])["runs"] == [{"run_id": 401, "workflow": PATH}]
+
+
 def test_merge_commit_sha_run_is_approved_and_recorded() -> None:
     fake = FakeApproval()
     fake.merge_commit_sha = MERGE
