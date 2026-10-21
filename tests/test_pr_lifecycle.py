@@ -1583,7 +1583,7 @@ def test_hold_clears_draft_record_so_later_human_draft_does_not_restore():
     assert fake.pull["draft"]
 
 
-def test_non_allowlisted_hold_does_not_block_ready():
+def test_non_allowlisted_hold_is_approved_and_blocks_until_green():
     fake = LifecycleAPI()
     fake.pull["draft"] = True
     fake.cancel_clears_hold = False
@@ -1599,13 +1599,15 @@ def test_non_allowlisted_hold_does_not_block_ready():
         head_repository={"full_name": "author/public-app"},
     ))
     result = reconcile_pull(fake.api(), REPO, 1)
-    assert result.lifecycle["action"] == "ready"
-    assert fake.transitions == [False]
-    assert not any("live-e2e.yml" in str(reason) for reason in result.lifecycle["reasons"])
+    assert "workflow:approve:202" in result.writes
+    assert result.lifecycle["action"] == "unchanged"
+    assert fake.pull["draft"] is True
+    assert fake.transitions == []
+    assert "CI not green: .github/workflows/live-e2e.yml (queued)" in result.lifecycle["reasons"]
     assert fake.cancels == []
 
 
-def test_non_allowlisted_cancelled_hold_does_not_block_ready():
+def test_non_allowlisted_hold_is_approved_when_cancel_would_clear():
     fake = LifecycleAPI()
     fake.pull["draft"] = True
     fake.runs.append(fake.run(
@@ -1620,9 +1622,11 @@ def test_non_allowlisted_cancelled_hold_does_not_block_ready():
         head_repository={"full_name": "author/public-app"},
     ))
     result = reconcile_pull(fake.api(), REPO, 1)
-    assert result.lifecycle["action"] == "ready"
-    assert fake.transitions == [False]
-    assert not any("live-e2e.yml" in str(reason) for reason in result.lifecycle["reasons"])
+    assert "workflow:approve:202" in result.writes
+    assert result.lifecycle["action"] == "unchanged"
+    assert fake.pull["draft"] is True
+    assert fake.transitions == []
+    assert "CI not green: .github/workflows/live-e2e.yml (queued)" in result.lifecycle["reasons"]
     assert fake.cancels == []
 
 
@@ -1672,19 +1676,20 @@ def test_non_allowlisted_cancel_after_job_started_still_blocks_ready():
     assert fake.cancels == []
 
 
-def test_required_workflow_action_required_still_blocks_when_not_allowlisted():
+def test_required_workflow_hold_is_approved_and_still_blocks_when_not_allowlisted():
     fake = LifecycleAPI()
     fake.runs[0].update(status="completed", conclusion="action_required")
     fake.config["workflow_approval"]["workflows"] = [".github/workflows/other.yml"]
     fake.set_pr_guard_config(fake.config)
     fake.cancel_clears_hold = False
     result = reconcile_pull(fake.api(), REPO, 1)
+    assert "workflow:approve:101" in result.writes
     assert result.lifecycle["action"] == "draft"
     assert fake.transitions == [True]
-    assert "CI not green: .github/workflows/test.yml (action_required)" in result.lifecycle["reasons"]
+    assert "CI not green: .github/workflows/test.yml (queued)" in result.lifecycle["reasons"]
 
 
-def test_newer_non_allowlisted_hold_does_not_hide_older_failure():
+def test_approved_newer_hold_waits_instead_of_keeping_the_older_failure():
     fake = LifecycleAPI()
     fake.pull["draft"] = True
     fake.cancel_clears_hold = False
@@ -1711,10 +1716,13 @@ def test_newer_non_allowlisted_hold_does_not_hide_older_failure():
         head_repository={"full_name": "author/public-app"},
     ))
     result = reconcile_pull(fake.api(), REPO, 1)
+    assert "workflow:approve:203" in result.writes
+    assert "workflow:approve:202" not in result.writes
     assert result.lifecycle["action"] == "unchanged"
     assert fake.pull["draft"] is True
     assert fake.transitions == []
-    assert "CI not green: .github/workflows/live-e2e.yml (failure)" in result.lifecycle["reasons"]
+    assert "CI not green: .github/workflows/live-e2e.yml (queued)" in result.lifecycle["reasons"]
+    assert fake.cancels == []
 
 
 @pytest.mark.parametrize("hold_conclusion", ["action_required", "cancelled"])

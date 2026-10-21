@@ -750,11 +750,12 @@ def ci_state(
 
     While workflow approval is enabled, a hold that is not required, not
     allowlisted, and never started a job does not block Ready and does not
-    hide an older same-head result of that workflow. The newest remaining
-    run is judged by the existing rule: success is green, and failure,
-    timeout, cancellation after a job started, and a run that is still
-    going are not. Required workflows, allowlisted workflows, and the same
-    hold while approval is disabled still block.
+    hide an older same-head result of that workflow. A hold approved earlier
+    in this reconcile is already queued and is judged as still going. The
+    newest remaining run is judged by the existing rule: success is green,
+    and failure, timeout, cancellation after a job started, and a run that
+    is still going are not. Required workflows, allowlisted workflows, and
+    the same hold while approval is disabled still block.
     """
     from .a38_guard import GuardError
     required = set(config["required_workflows"])
