@@ -496,6 +496,54 @@ class FakeAPI:
                         "<!-- /A38-REVIEW:v1 -->\n"
                     ),
                 })
+                second_lanes = [
+                    {"id": lane, "result": "pass", "status": "complete"}
+                    for lane in ("conformity-b", "logic-b")
+                ]
+                second_declaration = {
+                    "schema": "a38-review/v1",
+                    "head": head,
+                    "passes": 1,
+                    "defects": 0,
+                    "lanes": second_lanes,
+                }
+                second_record = {
+                    **second_declaration,
+                    "lanes": [
+                        {
+                            **lane,
+                            "provider": "Acme",
+                            "model": "Acme model",
+                            "model_number": "acme-1",
+                            "prompt": (
+                                "Read CONTRIBUTING.md and REVIEW.md at the base revision. Review this pull request against those files and against the linked issue. Do not change any files."
+                            ),
+                        }
+                        for lane in second_lanes
+                    ],
+                }
+                chunk.append({
+                    "id": 9_000_000_001,
+                    "created_at": "2099-01-02T00:00:00Z",
+                    "updated_at": "2099-01-02T00:00:00Z",
+                    "user": {"id": AUTHOR_ID, "login": "author", "type": "User"},
+                    "body": (
+                        "EN:\n"
+                        "Second review with Acme model\n"
+                        "No defects.\n"
+                        "\n"
+                        "DE:\n"
+                        "Zweiter Review mit Acme model\n"
+                        "Keine Mängel.\n"
+                        "\n"
+                        + render_review_record(second_record)
+                        + "<!-- A38-REVIEW:v1 -->\n"
+                        "```json\n"
+                        + json.dumps(second_declaration)
+                        + "\n```\n"
+                        "<!-- /A38-REVIEW:v1 -->\n"
+                    ),
+                })
             if start + per_page < len(self.comments):
                 next_page = page + 1
                 headers["link"] = (
@@ -1012,11 +1060,11 @@ class A38GuardE2ETests(unittest.TestCase):
         self.assertIn("sofern er nicht entfällt", body)
         self.assertIn("leave the pull request in draft", body)
         self.assertIn(
-            "A later comment that records only the second review run is optional and does not delay Ready.",
+            "Two review runs are required before the guard marks the pull request ready, once that CI and the required checks are green.",
             body,
         )
         self.assertIn(
-            "Ein späterer Kommentar, der nur den zweiten Review-Lauf festhält, ist optional und verzögert Ready nicht.",
+            "Vor Ready sind zwei Review-Läufe erforderlich, sobald diese CI und die erforderlichen Checks grün sind.",
             body,
         )
         self.assertIn("lass den Pull Request im Draft", body)
@@ -1065,11 +1113,11 @@ class A38GuardE2ETests(unittest.TestCase):
         self.assertIn("sofern er nicht entfällt", body)
         self.assertIn("leave the pull request in draft", body)
         self.assertIn(
-            "A later comment that records only the second review run is optional and does not delay Ready.",
+            "Two review runs are required before the guard marks the pull request ready, once that CI and the required checks are green.",
             body,
         )
         self.assertIn(
-            "Ein späterer Kommentar, der nur den zweiten Review-Lauf festhält, ist optional und verzögert Ready nicht.",
+            "Vor Ready sind zwei Review-Läufe erforderlich, sobald diese CI und die erforderlichen Checks grün sind.",
             body,
         )
         self.assertIn("lass den Pull Request im Draft", body)
@@ -1122,11 +1170,11 @@ class A38GuardE2ETests(unittest.TestCase):
         self.assertIn("sofern er nicht entfällt", body)
         self.assertIn("leave the pull request in draft", body)
         self.assertIn(
-            "A later comment that records only the second review run is optional and does not delay Ready.",
+            "Two review runs are required before the guard marks the pull request ready, once that CI and the required checks are green.",
             body,
         )
         self.assertIn(
-            "Ein späterer Kommentar, der nur den zweiten Review-Lauf festhält, ist optional und verzögert Ready nicht.",
+            "Vor Ready sind zwei Review-Läufe erforderlich, sobald diese CI und die erforderlichen Checks grün sind.",
             body,
         )
         self.assertIn("lass den Pull Request im Draft", body)
@@ -1667,11 +1715,11 @@ class A38GuardE2ETests(unittest.TestCase):
         self.assertIn("sofern er nicht entfällt", body)
         self.assertIn("leave the pull request in draft", body)
         self.assertIn(
-            "A later comment that records only the second review run is optional and does not delay Ready.",
+            "Two review runs are required before the guard marks the pull request ready, once that CI and the required checks are green.",
             body,
         )
         self.assertIn(
-            "Ein späterer Kommentar, der nur den zweiten Review-Lauf festhält, ist optional und verzögert Ready nicht.",
+            "Vor Ready sind zwei Review-Läufe erforderlich, sobald diese CI und die erforderlichen Checks grün sind.",
             body,
         )
         self.assertIn("lass den Pull Request im Draft", body)

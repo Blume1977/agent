@@ -6,7 +6,11 @@ import json
 
 import pytest
 
-from agent_cli.pr_guard_config import PrGuardConfigError, load_pr_guard_config
+from agent_cli.pr_guard_config import (
+    PrGuardConfigError,
+    load_pr_guard_config,
+    one_review_for,
+)
 
 pytestmark = pytest.mark.no_pg
 
@@ -160,6 +164,53 @@ def test_unknown_top_level_key_fails_closed() -> None:
     payload["extra"] = True
     with pytest.raises(PrGuardConfigError):
         load_pr_guard_config(json.dumps(payload))
+
+
+def test_omitted_one_review_authors_keeps_the_two_review_standard() -> None:
+    config = load_pr_guard_config(json.dumps(BASE))
+    assert "one_review_authors" not in config
+    assert one_review_for(config, "alice") is False
+    assert one_review_for(None, "alice") is False
+    assert one_review_for(config, "") is False
+
+
+def test_empty_one_review_authors_is_valid_and_is_not_an_exception() -> None:
+    config = load_pr_guard_config(json.dumps({**BASE, "one_review_authors": []}))
+    assert config["one_review_authors"] == []
+    assert one_review_for(config, "alice") is False
+
+
+def test_one_review_authors_match_the_opener_case_insensitively() -> None:
+    config = load_pr_guard_config(
+        json.dumps({**BASE, "one_review_authors": ["Alice", "bob-1"]})
+    )
+    assert config["one_review_authors"] == ["alice", "bob-1"]
+    assert one_review_for(config, "ALICE") is True
+    assert one_review_for(config, "Bob-1") is True
+    assert one_review_for(config, "carol") is False
+
+
+def test_one_review_authors_rejects_bad_logins_and_duplicates() -> None:
+    login_39 = "a" * 39
+    accepted = load_pr_guard_config(
+        json.dumps({**BASE, "one_review_authors": [login_39]})
+    )
+    assert accepted["one_review_authors"] == [login_39]
+    rejected = (
+        ["-alice"],
+        ["alice-"],
+        ["ali--ce"],
+        ["alice_bob"],
+        ["a" * 40],
+        [""],
+        [1],
+        "alice",
+        ["Alice", "alice"],
+        ["a"] * 65,
+    )
+    for authors in rejected:
+        with pytest.raises(PrGuardConfigError):
+            load_pr_guard_config(json.dumps({**BASE, "one_review_authors": authors}))
 
 
 def test_duplicate_json_key_fails_closed() -> None:

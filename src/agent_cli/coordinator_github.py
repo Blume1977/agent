@@ -1381,8 +1381,9 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
     save_task(store, task)
 
     body = (
-        f"Ready for review: the first review run is required and approved on `{head[:7]}` "
-        f"and CI green. The second review run does not block Ready. "
+        f"Ready for review: two review runs are required and approved on `{head[:7]}` "
+        f"and CI green. One review is enough only for an opener listed in "
+        f"one_review_authors. "
         f"Still not merge; a human merges."
     )
     activity_id = str(uuid5(NAMESPACE_URL, f"coordinator-ready-comment:{task['id']}:{head}"))

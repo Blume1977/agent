@@ -35,6 +35,7 @@ from .pr_guard_config import (
     PrGuardConfigError,
     evaluate_a38_scope,
     load_pr_guard_config,
+    one_review_for,
 )
 from .readme_only import (
     GUARD_WORKFLOW_PATH,
@@ -1641,11 +1642,11 @@ def build_comment_body(assessment: Assessment) -> str:
             "EN:\n"
             "Draft instructions\n"
             f"Thanks for your contribution! This repository follows the [A38 quality rules]({url}).\n"
-            "Post the review record for this head from your own GitHub account and post the local CI report unless it is waived, as two separate comments in either order, and leave the pull request in draft. The local CI report starts the CI runs, and the review record lets the guard mark it ready once that CI and the required checks are green. A later comment that records only the second review run is optional and does not delay Ready.\n\n"
+            "Post the review record for this head from your own GitHub account and post the local CI report unless it is waived, as two separate comments in either order, and leave the pull request in draft. The local CI report starts the CI runs. Two review runs are required before the guard marks the pull request ready, once that CI and the required checks are green. One review is enough only when the pull request opener is listed in one_review_authors in the trusted .github/pr-guard.json.\n\n"
             "DE:\n"
             "Entwurf-Hinweise\n"
             f"Danke für deinen Beitrag! In diesem Repository gelten die [A38-Qualitätsregeln]({url}).\n"
-            "Poste den Review-Nachweis für diesen Head von deinem eigenen GitHub-Konto und den lokalen CI-Bericht, sofern er nicht entfällt, als zwei getrennte Kommentare in beliebiger Reihenfolge, und lass den Pull Request im Draft. Der lokale CI-Bericht startet die CI-Läufe, und der Review-Nachweis lässt den Guard Ready setzen, sobald diese CI und die erforderlichen Checks grün sind. Ein späterer Kommentar, der nur den zweiten Review-Lauf festhält, ist optional und verzögert Ready nicht.\n"
+            "Poste den Review-Nachweis für diesen Head von deinem eigenen GitHub-Konto und den lokalen CI-Bericht, sofern er nicht entfällt, als zwei getrennte Kommentare in beliebiger Reihenfolge, und lass den Pull Request im Draft. Der lokale CI-Bericht startet die CI-Läufe. Vor Ready sind zwei Review-Läufe erforderlich, sobald diese CI und die erforderlichen Checks grün sind. Ein Review reicht nur, wenn der PR-Eröffner in one_review_authors der vertrauenswürdigen .github/pr-guard.json steht.\n"
         )
     names = ", ".join(assessment.required_names) if assessment.required_names else "(none)"
     problems = "; ".join(assessment.reasons) if assessment.reasons else "none"
@@ -2625,6 +2626,7 @@ def assess_pull(
         author_id=snap.author_id,
         comments=comments,
         markdown_only=markdown_only,
+        one_review_author=one_review_for(trusted.config, snap.author_login),
     )
     _apply_review_result(assessment, review_ok, review_reasons)
     return assessment
@@ -2714,6 +2716,10 @@ def publish_assessment(
                 author_id=fresh.author_id,
                 comments=gate_comments,
                 markdown_only=gate_markdown,
+                one_review_author=one_review_for(
+                    resolve_trusted_guard_config(api, fresh).config,
+                    fresh.author_login,
+                ),
             )
             if not gate_ok:
                 # Statuses are append-only. Never leave or write enforce success
@@ -2842,6 +2848,10 @@ def publish_assessment(
         author_id=fresh.author_id,
         comments=comments,
         markdown_only=fresh_markdown,
+        one_review_author=one_review_for(
+            resolve_trusted_guard_config(api, fresh).config,
+            fresh.author_login,
+        ),
     )
     review_changed = fresh_ok != assessment.review_ok or list(fresh_reasons) != list(
         assessment.review_reasons

@@ -23,6 +23,11 @@ CONFIG_PATH = ".github/pr-guard.json"
 TOP_KEYS = frozenset({"schema", "a38"})
 WORKFLOW_APPROVAL_KEYS = frozenset({"enabled", "workflows"})
 ENVIRONMENT_APPROVAL_KEYS = frozenset({"enabled", "environment", "workflows"})
+ONE_REVIEW_AUTHORS_KEY = "one_review_authors"
+MAX_ONE_REVIEW_AUTHORS = 64
+# GitHub login: 1–39 characters, letters, digits, and hyphens that are not
+# leading, trailing, or doubled.
+_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
 WORKFLOW_PATH_RE = re.compile(r"^\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:yml|yaml)$")
 A38_KEYS = frozenset({"enforce", "exclude", "default"})
 SCOPE_MODES = frozenset({"enforce", "exclude"})
@@ -111,6 +116,43 @@ def _parse_branch_list(raw: Any, label: str) -> list[str]:
     return out
 
 
+def _parse_login_list(raw: Any, label: str) -> list[str]:
+    if not isinstance(raw, list):
+        raise PrGuardConfigError(f"{label} must be an array")
+    if len(raw) > MAX_ONE_REVIEW_AUTHORS:
+        raise PrGuardConfigError(f"{label} exceeds {MAX_ONE_REVIEW_AUTHORS} entries")
+    out: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, str) or _LOGIN_RE.fullmatch(item) is None:
+            raise PrGuardConfigError(
+                f"{label}[{index}] must be a GitHub login "
+                "(1–39 characters, letters, digits, single hyphens)"
+            )
+        folded = item.casefold()
+        if folded in seen:
+            raise PrGuardConfigError(f"{label} contains duplicate login {item!r}")
+        seen.add(folded)
+        out.append(folded)
+    return out
+
+
+def one_review_for(config: Mapping[str, Any] | None, login: str) -> bool:
+    """True only when this pull opener is on the trusted exception list.
+
+    Two reviews are the standard. Missing configuration, a missing key, and
+    an empty list all keep that standard. Matching ignores case. The caller
+    passes the trusted default-branch config, never the pull request head.
+    """
+    if not isinstance(config, Mapping) or not isinstance(login, str) or not login:
+        return False
+    authors = config.get(ONE_REVIEW_AUTHORS_KEY)
+    if not isinstance(authors, list):
+        return False
+    folded = login.casefold()
+    return any(isinstance(name, str) and name.casefold() == folded for name in authors)
+
+
 def load_pr_guard_config(text: str) -> dict[str, Any]:
     """Validate pr-guard/v1 JSON and return a normalized object."""
     payload = _loads_json(text)
@@ -120,7 +162,13 @@ def load_pr_guard_config(text: str) -> dict[str, Any]:
         {
             k: v
             for k, v in payload.items()
-            if k not in {"workflow_approval", "environment_approval", "lifecycle"}
+            if k
+            not in {
+                "workflow_approval",
+                "environment_approval",
+                "lifecycle",
+                ONE_REVIEW_AUTHORS_KEY,
+            }
         },
         TOP_KEYS,
         "pr-guard config",
@@ -251,6 +299,10 @@ def load_pr_guard_config(text: str) -> dict[str, Any]:
                     or len(set(names)) != len(names)):
                 raise PrGuardConfigError("required_checks needs bounded unique exact check names")
         normalized["lifecycle"] = dict(lifecycle)
+    if ONE_REVIEW_AUTHORS_KEY in payload:
+        normalized[ONE_REVIEW_AUTHORS_KEY] = _parse_login_list(
+            payload[ONE_REVIEW_AUTHORS_KEY], ONE_REVIEW_AUTHORS_KEY
+        )
     return normalized
 
 
