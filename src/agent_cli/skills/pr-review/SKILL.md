@@ -197,7 +197,7 @@ not merge and not pull-request completion.
 Once both review runs on **this** head are `approved` and CI on this head is
 green, insert a `review.post` with `event: APPROVE` alongside the first review run comment.
 One review is enough for that step only when the pull request opener is listed in
-`one_review_authors`.
+`one_review_authors` in the trusted `.github/pr-guard.json` on the default branch. A missing file, a missing key, or an empty list keeps two reviews required. An entry that exists only on the pull request head does not count.
 That is a review this account submits on the pull request, not a merge and not
 completion: the agent still does not merge, and a human still does. Claim
 completion only after that human merge is verified.
