@@ -1251,7 +1251,7 @@ def _opener_one_review(
 
 
 def _codex_skip(store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner, *, phase: str, head: str) -> bool | list[str]:
-    """True when the second review may be skipped. A list is a retry message."""
+    """True when the second review may be skipped. A list is a retry message. Two reviews are the standard. One review is enough only when the pull request opener is listed in one_review_authors in the trusted .github/pr-guard.json on the default branch. A missing file, a missing key, or an empty list keeps two reviews required. An entry that exists only on the pull request head does not count."""
     if not _both_codex_reviews_na(store, task["id"]):
         return False
     try:
