@@ -49,6 +49,7 @@ from .knock import listen_once as knock_listen
 from .lane import LANE_ROLES, LANE_VENDORS, LaneResult, launch
 from .local_ci import LocalCiError, parse_comment, parse_payload, render_block, verify_comment
 from .pg import PgError, cluster_exists, cluster_running, ensure_cluster, require_loopback_dsn, stop_cluster
+from .pr_guard_config import PrGuardLookupError, fetch_trusted_pr_guard, one_review_for
 from .runtime import (
     Runtime,
     grok_model,
@@ -817,6 +818,22 @@ def cmd_checklist(args: list[str]) -> None:
         items = [r for r in store.rows("checklist_item") if r.get("task_id") == tid and r.get("key") == key]
         if len(items) != 1:
             die(f"checklist {key} for task {tid} not found")
+        if status == "n_a" and key in CODEX_SECOND_REVIEW_KEYS:
+            login, config = _live_one_review(task)
+            if not one_review_for(config, login):
+                die(
+                    f"n_a for {key} requires one_review_authors "
+                    "on the trusted default branch"
+                )
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            payload = dict(payload)
+            payload["one_review_author"] = {
+                "pull_opener": login,
+                "trusted_pr_guard": config,
+            }
+            task["payload"] = payload
+            task["updated_at"] = utcnow()
+            store.write("task", "update", tid, _strip(task))
         item = items[0]
         item["status"] = status
         item["source"] = source
@@ -2340,6 +2357,8 @@ def load_task_dict(store: Store, tid: str) -> dict:
         }
         for g in ordered_gates
     ]
+    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+    one = payload.get("one_review_author") if isinstance(payload.get("one_review_author"), dict) else {}
     return {
         "id": task["id"],
         "session_id": task.get("session_id"),
@@ -2352,6 +2371,8 @@ def load_task_dict(store: Store, tid: str) -> dict:
         },
         "gates": gates,
         "local_checks": local_checks,
+        "pull_opener": one.get("pull_opener") if isinstance(one.get("pull_opener"), str) else "",
+        "trusted_pr_guard": one.get("trusted_pr_guard") if isinstance(one.get("trusted_pr_guard"), dict) else None,
     }
 
 
@@ -2648,6 +2669,10 @@ def cmd_close_step(args: list[str]) -> None:
     try:
         _require_task_session_active(store, tid)
         snap = _chain_snapshot(store, tid, extra_head=head)
+        if status == "n_a" and key in CODEX_SECOND_REVIEW_KEYS:
+            login, config = _live_one_review(store.row("task", tid) or {})
+            snap["pull_opener"] = login
+            snap["trusted_pr_guard"] = config
         wf = str(snap["workflow"])
         verdict = close_allowed(
             wf,
@@ -2676,6 +2701,40 @@ def cmd_close_step(args: list[str]) -> None:
         evidence,
     ]
     cmd_checklist(set_args)
+
+
+def _task_repo_and_pr(task: dict) -> tuple[str, str]:
+    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+    coord = payload.get("coordinator") if isinstance(payload.get("coordinator"), dict) else {}
+    repo = str(coord.get("publication_repo") or task.get("repo") or "")
+    number = coord.get("pr_number")
+    if number is None:
+        ref = str(task.get("ref") or "")
+        number = ref if ref.isdigit() else ""
+    return repo, str(number or "")
+
+
+def _live_one_review(task: dict) -> tuple[str, dict | None]:
+    """Opener and trusted default-branch config. Never reads the pull request head."""
+    repo, number = _task_repo_and_pr(task)
+    if not repo or not number:
+        return "", None
+    view = _exec_argv(["gh", "pr", "view", number, "--repo", repo, "--json", "author"])
+    if view.returncode != 0:
+        die("trusted review list could not be read")
+    try:
+        body = json.loads(view.stdout or "{}")
+    except json.JSONDecodeError:
+        die("trusted review list could not be read")
+    author = body.get("author") if isinstance(body, dict) else None
+    login = str(author.get("login") or "") if isinstance(author, dict) else ""
+    if not login:
+        return "", None
+    try:
+        config = fetch_trusted_pr_guard(_exec_argv, repo)
+    except PrGuardLookupError:
+        die("trusted review list could not be read")
+    return login, config
 
 
 def _exec_argv(argv: list[str], *, cwd: str | None = None) -> "Completed":

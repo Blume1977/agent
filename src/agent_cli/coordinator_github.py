@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from .allow import GATE_PAIRS, evaluate_allow
+from .allow import GATE_PAIRS, SECOND_REVIEW_NOT_POSTED, evaluate_allow
 from .coordinator_common import (
     ACCEPT_BODY,
     ACCEPT_MARKER_PREFIX,
@@ -51,6 +51,7 @@ from .github_act import (
     REVIEW_APPROVE_NON_APPROVED,
 )
 from .github_accounts import AccountError
+from .pr_guard_config import PrGuardLookupError, fetch_trusted_pr_guard, one_review_for
 from .store import Store, StoreError, utcnow
 
 # Executor error strings that prove an observed same-marker APPROVE rejection.
@@ -920,8 +921,11 @@ def phase_readiness(store: Store, worker: WorkerConfig, task: dict[str, Any], ru
         save_task(store, task)
         return [retry]
     latest = latest_gates(store, task["id"])
+    skip_codex = _codex_skip(store, worker, task, runner, phase="readiness", head=head)
+    if isinstance(skip_codex, list):
+        return skip_codex
     for stage, dimension, vendor in GATE_PAIRS:
-        if stage == "codex-pr" and _both_codex_reviews_na(store, task["id"]):
+        if stage == "codex-pr" and skip_codex:
             continue
         g = latest.get((stage, dimension))
         if g is None or g.get("verdict") != "approved" or g.get("head_sha") != head or g.get("vendor") != vendor:
@@ -1040,8 +1044,11 @@ def phase_formal_approve(
         save_task(store, task)
         return [retry]
     latest = latest_gates(store, task["id"])
+    skip_codex = _codex_skip(store, worker, task, runner, phase="formal_approve", head=head)
+    if isinstance(skip_codex, list):
+        return skip_codex
     for stage, dimension, vendor in GATE_PAIRS:
-        if stage == "codex-pr" and _both_codex_reviews_na(store, task["id"]):
+        if stage == "codex-pr" and skip_codex:
             continue
         g = latest.get((stage, dimension))
         if g is None or g.get("verdict") != "approved" or g.get("head_sha") != head or g.get("vendor") != vendor:
@@ -1200,11 +1207,60 @@ def _task_snapshot(store: Store, tid: str) -> dict[str, Any]:
 
 
 def _both_codex_reviews_na(store: Store, task_id: str) -> bool:
-    checklist = _task_snapshot(store, task_id).get("checklist") or {}
-    return (
-        checklist.get("codex_pr_quality") == "n_a"
-        and checklist.get("codex_pr_logic") == "n_a"
-    )
+    rows = {
+        str(row.get("key")): row
+        for row in store.rows("checklist_item")
+        if row.get("task_id") == task_id
+    }
+    for key in ("codex_pr_quality", "codex_pr_logic"):
+        row = rows.get(key)
+        if not isinstance(row, dict):
+            return False
+        if row.get("status") != "n_a" or row.get("evidence") != SECOND_REVIEW_NOT_POSTED:
+            return False
+    return True
+
+
+def _opener_one_review(
+    store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner
+) -> bool:
+    """Two reviews are required before Ready.
+
+    One review is enough only when the pull request opener is listed in
+    one_review_authors in the trusted .github/pr-guard.json on the default
+    branch. A missing file, a missing key, or an empty list keeps two reviews
+    required. An entry that exists only on the pull request head does not count.
+    """
+    if not _both_codex_reviews_na(store, task["id"]):
+        return False
+    target = target_repo(task)
+    number = as_int(coord(task).get("pr_number"))
+    if number is None or not target:
+        return False
+    scoped_runner = scoped(store, worker.session_id, runner)
+    pr = _fetch_pr_json(scoped_runner, target, number, "author")
+    author = pr.get("author") if isinstance(pr, dict) and isinstance(pr.get("author"), dict) else {}
+    login = str(author.get("login") or "")
+    if not login:
+        return False
+    try:
+        config = fetch_trusted_pr_guard(scoped_runner, target)
+    except PrGuardLookupError as exc:
+        raise CiObservationTransportError("trusted pr-guard file could not be read") from exc
+    return one_review_for(config, login)
+
+
+def _codex_skip(store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner, *, phase: str, head: str) -> bool | list[str]:
+    """True when the second review may be skipped. A list is a retry message."""
+    if not _both_codex_reviews_na(store, task["id"]):
+        return False
+    try:
+        return _opener_one_review(store, worker, task, runner)
+    except CiObservationTransportError:
+        c = coord(task)
+        c["phase"] = phase
+        save_task(store, task)
+        return [f"trusted review list temporarily unavailable on {head[:7]}; retrying {phase}"]
 
 
 def _invalidate_stale_formal_approval(task: dict[str, Any], *, reason: str) -> None:
@@ -1329,8 +1385,11 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
         save_task(store, task)
         return [f"formal APPROVE not yet visible on {head[:7]}; retrying leave-draft"]
     latest = latest_gates(store, task["id"])
+    skip_codex = _codex_skip(store, worker, task, runner, phase="leave_draft", head=head)
+    if isinstance(skip_codex, list):
+        return skip_codex
     for stage, dimension, vendor in GATE_PAIRS:
-        if stage == "codex-pr" and _both_codex_reviews_na(store, task["id"]):
+        if stage == "codex-pr" and skip_codex:
             continue
         g = latest.get((stage, dimension))
         if g is None or g.get("verdict") != "approved" or g.get("head_sha") != head or g.get("vendor") != vendor:

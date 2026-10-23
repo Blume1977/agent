@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import urllib.parse
 from typing import Any, Mapping
 
 SCHEMA_ID = "pr-guard/v1"
@@ -37,6 +38,10 @@ BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,74}$")
 
 class PrGuardConfigError(ValueError):
     """Invalid pr-guard configuration (schema, keys, overlap, or JSON)."""
+
+
+class PrGuardLookupError(Exception):
+    """The trusted default-branch file could not be read."""
 
 
 def _object_pairs_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -138,11 +143,12 @@ def _parse_login_list(raw: Any, label: str) -> list[str]:
 
 
 def one_review_for(config: Mapping[str, Any] | None, login: str) -> bool:
-    """True only when this pull opener is on the trusted exception list.
+    """Two reviews are the standard.
 
-    Two reviews are the standard. Missing configuration, a missing key, and
-    an empty list all keep that standard. Matching ignores case. The caller
-    passes the trusted default-branch config, never the pull request head.
+    True only when this pull opener is listed in ``one_review_authors``.
+    A missing file, a missing key, or an empty list keeps two reviews required.
+    The caller passes the trusted default-branch config. An entry that exists
+    only on the pull request head does not count. Matching ignores case.
     """
     if not isinstance(config, Mapping) or not isinstance(login, str) or not login:
         return False
@@ -359,3 +365,79 @@ def evaluate_a38_scope(
             f"{CONFIG_PATH} a38.default={default!r} applies"
         ),
     )
+
+
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _lookup_completed(runner: Any, argv: list[str]) -> Any:
+    try:
+        return runner(argv)
+    except OSError as exc:
+        raise PrGuardLookupError("trusted pr-guard file could not be read") from exc
+
+
+def _lookup_json(completed: Any, label: str) -> Any:
+    if getattr(completed, "returncode", 1) != 0:
+        raise PrGuardLookupError(f"{label} could not be read")
+    raw = getattr(completed, "stdout", "") or ""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise PrGuardLookupError(f"{label} could not be read") from exc
+
+
+def fetch_trusted_pr_guard(runner: Any, repo: str) -> dict[str, Any] | None:
+    """Load ``.github/pr-guard.json`` from the default-branch commit.
+
+    Two reviews are required. One review is enough only when the opener is
+    listed in ``one_review_authors`` on this trusted file. A missing file, a
+    missing key, or an empty list keeps two reviews required. An entry that
+    exists only on the pull request head does not count: this read never uses
+    the head. A missing file returns None. Malformed JSON returns None. A
+    transport failure raises ``PrGuardLookupError``.
+    """
+    if not isinstance(repo, str) or _REPO_RE.fullmatch(repo) is None:
+        return None
+    repo_doc = _lookup_json(
+        _lookup_completed(runner, ["gh", "api", f"repos/{repo}"]),
+        "default branch",
+    )
+    branch = repo_doc.get("default_branch") if isinstance(repo_doc, dict) else None
+    if not isinstance(branch, str) or not branch or branch.strip() != branch:
+        return None
+    quoted = urllib.parse.quote(branch, safe="")
+    commit_doc = _lookup_json(
+        _lookup_completed(runner, ["gh", "api", f"repos/{repo}/commits/{quoted}"]),
+        "default-branch commit",
+    )
+    sha = commit_doc.get("sha") if isinstance(commit_doc, dict) else None
+    if not isinstance(sha, str) or _SHA_RE.fullmatch(sha) is None:
+        return None
+    completed = _lookup_completed(
+        runner,
+        [
+            "gh",
+            "api",
+            "-H",
+            "Accept: application/vnd.github.raw",
+            f"repos/{repo}/contents/{CONFIG_PATH}?ref={sha}",
+        ],
+    )
+    if getattr(completed, "returncode", 1) != 0:
+        detail = f"{getattr(completed, 'stderr', '') or ''} {getattr(completed, 'stdout', '') or ''}"
+        if "404" in detail or "Not Found" in detail:
+            return None
+        raise PrGuardLookupError("trusted pr-guard file could not be read")
+    raw = getattr(completed, "stdout", "") or ""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return load_pr_guard_config(json.dumps(payload))
+    except PrGuardConfigError:
+        return None

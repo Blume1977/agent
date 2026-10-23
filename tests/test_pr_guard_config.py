@@ -8,6 +8,8 @@ import pytest
 
 from agent_cli.pr_guard_config import (
     PrGuardConfigError,
+    PrGuardLookupError,
+    fetch_trusted_pr_guard,
     load_pr_guard_config,
     one_review_for,
 )
@@ -222,3 +224,53 @@ def test_duplicate_json_key_fails_closed() -> None:
     )
     with pytest.raises(PrGuardConfigError, match="duplicate key"):
         load_pr_guard_config(raw)
+
+
+class _Completed:
+    def __init__(self, code: int, out: str, err: str = "") -> None:
+        self.returncode = code
+        self.stdout = out
+        self.stderr = err
+
+
+def test_fetch_trusted_pr_guard_reads_the_default_branch_commit() -> None:
+    seen: list[list[str]] = []
+    body = json.dumps({**BASE, "one_review_authors": ["Alice"]})
+    sha = "a" * 40
+
+    def runner(argv: list[str]) -> _Completed:
+        seen.append(argv)
+        path = argv[-1]
+        if path == "repos/acme/widget":
+            return _Completed(0, json.dumps({"default_branch": "develop"}))
+        if path == "repos/acme/widget/commits/develop":
+            return _Completed(0, json.dumps({"sha": sha}))
+        if path == f"repos/acme/widget/contents/.github/pr-guard.json?ref={sha}":
+            return _Completed(0, body)
+        raise AssertionError(argv)
+
+    config = fetch_trusted_pr_guard(runner, "acme/widget")
+    assert one_review_for(config, "alice") is True
+    assert all("refs/heads/" not in " ".join(argv) for argv in seen)
+    assert any(f"ref={sha}" in argv[-1] for argv in seen)
+
+
+def test_fetch_trusted_pr_guard_missing_file_is_not_an_exception() -> None:
+    def runner(argv: list[str]) -> _Completed:
+        path = argv[-1]
+        if path == "repos/acme/widget":
+            return _Completed(0, json.dumps({"default_branch": "develop"}))
+        if path.endswith("/commits/develop"):
+            return _Completed(0, json.dumps({"sha": "b" * 40}))
+        return _Completed(1, "", "HTTP 404: Not Found")
+
+    assert fetch_trusted_pr_guard(runner, "acme/widget") is None
+    assert one_review_for(None, "alice") is False
+
+
+def test_fetch_trusted_pr_guard_transport_error_is_not_a_missing_file() -> None:
+    def runner(argv: list[str]) -> _Completed:
+        return _Completed(1, "", "connection reset")
+
+    with pytest.raises(PrGuardLookupError):
+        fetch_trusted_pr_guard(runner, "acme/widget")

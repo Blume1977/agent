@@ -2087,7 +2087,11 @@ def _seed_ready_side_task(
                 "task_id": tid,
                 "key": key,
                 "status": status,
-                "evidence": "seed",
+                "evidence": (
+                    "second review not posted"
+                    if status == "n_a" and key in ("codex_pr_quality", "codex_pr_logic")
+                    else "seed"
+                ),
                 "source": "human" if key in ("spec_written", "deviation_declared", "deviation_granted") else "script",
                 "deviation_declared": False,
                 "deviation_granted": False,
@@ -2150,10 +2154,21 @@ def _seed_ready_side_task(
     return task
 
 
-def test_readiness_skips_codex_pr_when_both_checklist_na(
+def _list_opener(fake: FakeGh, login: str = "worker-bot") -> None:
+    fake.pr_guard_body = json.dumps(
+        {
+            "schema": "pr-guard/v1",
+            "a38": {"enforce": [], "exclude": [], "default": "enforce"},
+            "one_review_authors": [login],
+        }
+    )
+
+
+def test_readiness_skips_codex_pr_when_opener_is_listed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, worker, fake = _ready_side_env(tmp_path, monkeypatch)
+    _list_opener(fake)
     tid = "aa000001-0000-4000-8000-000000000001"
     task = _seed_ready_side_task(
         store,
@@ -2166,6 +2181,23 @@ def test_readiness_skips_codex_pr_when_both_checklist_na(
     lines = phase_readiness(store, worker, task, fake)
     assert any(f"readiness ok on {fake.head[:7]}" in line for line in lines)
     assert not any("missing approved gate codex-pr/" in line for line in lines)
+
+
+def test_readiness_requires_codex_pr_when_file_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _ready_side_env(tmp_path, monkeypatch)
+    tid = "aa000001-0000-4000-8000-000000000001"
+    task = _seed_ready_side_task(
+        store,
+        worker,
+        fake,
+        tid=tid,
+        phase="readiness",
+        checklist_codex={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+    )
+    with pytest.raises(CoordinatorError, match="missing approved gate codex-pr/"):
+        phase_readiness(store, worker, task, fake)
 
 
 def test_readiness_still_requires_grok_pr_when_codex_checklist_na(
@@ -2255,10 +2287,11 @@ def test_readiness_requires_codex_pr_when_unavailable_with_na(
         phase_readiness(store, worker, task, fake)
 
 
-def test_formal_approve_skips_codex_pr_when_both_checklist_na(
+def test_formal_approve_skips_codex_pr_when_opener_is_listed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, worker, fake = _ready_side_env(tmp_path, monkeypatch, patch_github=True)
+    _list_opener(fake)
     tid = "aa000001-0000-4000-8000-000000000041"
     task = _seed_ready_side_task(
         store,
@@ -2277,10 +2310,11 @@ def test_formal_approve_skips_codex_pr_when_both_checklist_na(
     )
 
 
-def test_leave_draft_skips_codex_pr_when_both_checklist_na(
+def test_leave_draft_skips_codex_pr_when_opener_is_listed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, worker, fake = _ready_side_env(tmp_path, monkeypatch, patch_github=True)
+    _list_opener(fake)
     tid = "aa000001-0000-4000-8000-000000000051"
     task = _seed_ready_side_task(
         store,

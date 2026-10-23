@@ -58,7 +58,7 @@ A38 applicability is **repository configuration**, except for the built-in exact
 | `a38.enforce` | Bounded array of exact target branch names that require A38. |
 | `a38.exclude` | Bounded array of exact target branch names that skip A38. |
 | `a38.default` | `enforce` or `exclude` for every target branch not listed above. |
-| `one_review_authors` | Optional. Omitted, or `[]`, is the standard: Ready requires two review comments. A login in this array is the only exception, and only for the pull request opener: one review comment is then enough. Logins match case-insensitively and are stored lowercase. At most 64. Each is a GitHub login of 1–39 characters: letters, digits, and hyphens that are not leading, trailing, or doubled. Duplicates fail closed. The guard reads the list only from the trusted default-branch revision. An entry that exists only on the pull request head does not apply. |
+| `one_review_authors` | Optional. Two review comments are required. A missing file, a missing key, or an empty list keeps that requirement. Omitted, or `[]`, is that standard: Ready requires two review comments. A login in this array is the only exception, and only for the pull request opener: one review comment is then enough. Logins match case-insensitively and are stored lowercase. At most 64. Each is a GitHub login of 1–39 characters: letters, digits, and hyphens that are not leading, trailing, or doubled. Duplicates fail closed. The guard reads the list only from the trusted default-branch revision. An entry that exists only on the pull request head does not apply. |
 
 Rules enforced centrally by the Agent:
 
