@@ -823,7 +823,9 @@ def cmd_checklist(args: list[str]) -> None:
             if not one_review_for(config, login):
                 die(
                     f"n_a for {key} requires one_review_authors "
-                    "on the trusted default branch"
+                    "in the trusted .github/pr-guard.json on the default branch. "
+                    "A missing file, a missing key, or an empty list keeps two reviews required. "
+                    "An entry that exists only on the pull request head does not count."
                 )
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             payload = dict(payload)

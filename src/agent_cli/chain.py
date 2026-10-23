@@ -327,7 +327,7 @@ def close_allowed(
         ):
             return CloseVerdict(
                 False,
-                f"{key} n_a requires one_review_authors on the trusted default branch",
+                f"{key} n_a requires one_review_authors in the trusted .github/pr-guard.json on the default branch. A missing file, a missing key, or an empty list keeps two reviews required. An entry that exists only on the pull request head does not count.",
                 step,
             )
         return CloseVerdict(True, "allow", step)
