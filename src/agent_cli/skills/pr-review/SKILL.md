@@ -149,9 +149,9 @@ repository's written CI rules hold on this head.
 CI stays bound to the current head. Two review runs are required. The checklist
 keys for the second run are `n_a` with evidence exactly
 `second review not posted` only when the pull request opener is listed in
-`one_review_authors` in the trusted `.github/pr-guard.json`. That list is the
+`one_review_authors` in the trusted `.github/pr-guard.json` on the default branch. That list is the
 exception. A missing file, a missing key, and an empty list keep the standard,
-and `done` waits for both gates. The frozen `dfx-local-ci/v1` format and legacy verifier do not
+and `done` waits for both gates. An entry that exists only on the pull request head does not count. The frozen `dfx-local-ci/v1` format and legacy verifier do not
 themselves determine applicability. Private visibility alone is not A38 opt-in or
 permission to skip GitHub CI. Under the central [A38 standard](../../../../docs/a38.md)
 and [guard guide](../../../../docs/a38-guard.md), private local code-gate equivalence
@@ -168,7 +168,7 @@ not mark ready if it denies. Then one comment whose lanes are exactly
 `conformity-a` with `logic-a`, and a later comment whose lanes are exactly
 `conformity-b` with `logic-b`. Two reviews are required before Ready. One
 review is enough only when the pull request opener is listed in
-`one_review_authors` in the trusted `.github/pr-guard.json`. The second
+`one_review_authors` in the trusted `.github/pr-guard.json` on the default branch. A missing file, a missing key, or an empty list keeps two reviews required. An entry that exists only on the pull request head does not count. The second
 comment does not replace the first-run comment, does not start CI, and is ignored
 when the guard chooses the review comment. Ready still requires it under the standard. A newer one does not hide an older valid first-run
 comment. Choosing that comment ignores the second run. The newest

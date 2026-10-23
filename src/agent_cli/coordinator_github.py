@@ -1382,8 +1382,10 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
 
     body = (
         f"Ready for review: two review runs are required and approved on `{head[:7]}` "
-        f"and CI green. One review is enough only for an opener listed in "
-        f"one_review_authors. "
+        f"and CI green. One review is enough only when the pull request opener is listed in "
+        f"one_review_authors in the trusted .github/pr-guard.json on the default branch. "
+        f"A missing file, a missing key, or an empty list keeps two reviews required. "
+        f"An entry that exists only on the pull request head does not count. "
         f"Still not merge; a human merges."
     )
     activity_id = str(uuid5(NAMESPACE_URL, f"coordinator-ready-comment:{task['id']}:{head}"))
