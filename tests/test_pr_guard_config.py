@@ -292,6 +292,43 @@ def test_fetch_trusted_pr_guard_missing_file_is_not_an_exception() -> None:
     assert one_review_for(None, "alice") is False
 
 
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"message":"Not Found","documentation_url":"https://docs.github.com/rest"}',
+        '{"message": "Not Found"}',
+    ],
+)
+def test_fetch_trusted_pr_guard_json_only_404_is_a_missing_file(stream: str, body: str) -> None:
+    def runner(argv: list[str]) -> _Completed:
+        path = argv[-1]
+        if path == "repos/acme/widget":
+            return _Completed(0, json.dumps({"default_branch": "develop"}))
+        if path.endswith("/commits/develop"):
+            return _Completed(0, json.dumps({"sha": "b" * 40}))
+        if stream == "stdout":
+            return _Completed(1, body, "")
+        return _Completed(1, "", body)
+
+    assert fetch_trusted_pr_guard(runner, "acme/widget") is None
+
+
+def test_fetch_trusted_pr_guard_longer_not_found_message_is_not_a_missing_file() -> None:
+    sha = ("b" * 37) + "404"
+
+    def runner(argv: list[str]) -> _Completed:
+        path = argv[-1]
+        if path == "repos/acme/widget":
+            return _Completed(0, json.dumps({"default_branch": "develop"}))
+        if path.endswith("/commits/develop"):
+            return _Completed(0, json.dumps({"sha": sha}))
+        return _Completed(1, "", json.dumps({"message": "Not Foundry"}))
+
+    with pytest.raises(PrGuardLookupError):
+        fetch_trusted_pr_guard(runner, "acme/widget")
+
+
 def test_fetch_trusted_pr_guard_sha_containing_404_is_not_a_missing_file() -> None:
     sha = ("b" * 37) + "404"
 

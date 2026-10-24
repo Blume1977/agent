@@ -392,13 +392,16 @@ def _contents_file_missing(completed: Any) -> bool:
     """True only for an HTTP 404 of the contents response.
 
     A commit SHA in the request URL can contain the hex digits ``404``.
-    That substring is not a missing file.
+    That substring is not a missing file. A JSON object whose message is
+    exactly ``Not Found`` is a missing file. Spaces are removed before that
+    comparison, and the closing quote has to follow ``NotFound``. A longer
+    message is not a missing file.
     """
     detail = f"{getattr(completed, 'stderr', '') or ''}\n{getattr(completed, 'stdout', '') or ''}"
     if "HTTP 404" in detail:
         return True
     compact = detail.replace(" ", "")
-    return '"message":"Not Found"' in compact
+    return '"message":"NotFound"' in compact
 
 
 def fetch_trusted_pr_guard(runner: Any, repo: str) -> dict[str, Any] | None:
