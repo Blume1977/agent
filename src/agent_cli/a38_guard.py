@@ -51,6 +51,8 @@ API_ORIGIN = "https://api.github.com"
 API_HOST = "api.github.com"
 POLICY_PATH = ".github/a38.json"
 GUARD_MARKER = "<!-- PR-GUARD:A38:v1 -->"
+APPROVAL_MARKER = "<!-- PR-GUARD:APPROVAL:v1 -->"
+_APPROVAL_SUFFIX = " bytes changed vs base; a maintainer must approve the current head"
 GUARD_DOCS = "docs/a38-guard.md"
 POLICY_DOCS = "docs/a38.md"
 CENTRAL_REPO = "DFXswiss/agent"
@@ -1584,58 +1586,69 @@ def _steps_url(url: str) -> str:
     return base + "#what-you-must-do"
 
 
+def _approval_split(reasons: Sequence[str]) -> tuple[list[str], list[str]]:
+    paths: list[str] = []
+    others: list[str] = []
+    for reason in reasons:
+        if reason.endswith(_APPROVAL_SUFFIX):
+            path = reason[: -len(_APPROVAL_SUFFIX)].strip()
+            if path and path not in paths:
+                paths.append(path)
+        else:
+            others.append(reason)
+    return paths, others
+
+
+def build_approval_comment(assessment: Assessment) -> str | None:
+    """Separate draft comment when changed bytes still need approval.
+
+    The welcome comment stays. This one is absent when nothing needs that
+    approval. A docs-waiver draft keeps its own comment and does not get
+    this extra posting.
+    """
+    if not assessment.draft or _draft_docs_waiver_pass(assessment):
+        return None
+    paths, others = _approval_split(assessment.reasons)
+    if not paths:
+        return None
+    details = ""
+    for path in paths:
+        details += f"- Changed paths: `{path}`\n"
+    details += (
+        "- An ordinary approving review on the current head is enough. "
+        "No special review text is required. The reviewer needs write, "
+        "maintain, or admin and must not be the author.\n"
+    )
+    for path in paths:
+        details += f"- Geänderte Pfade: `{path}`\n"
+    details += (
+        "- Eine gewöhnliche freigebende Review auf dem aktuellen Head reicht. "
+        "Kein besonderer Review-Text. Die Person braucht Schreib-, Maintain- "
+        "oder Admin-Recht und darf nicht der Autor sein.\n"
+    )
+    if others:
+        details += "- Other problems: " + "; ".join(others) + "\n"
+    body = (
+        f"{APPROVAL_MARKER}\n\n"
+        "EN:\n"
+        "Approval required\n"
+        "This pull request needs an approval on the current head from someone "
+        "with write, maintain, or admin who is not the author, so the guard "
+        "can continue.\n\n"
+        "DE:\n"
+        "Freigabe nötig\n"
+        "Dieser Pull Request braucht auf dem aktuellen Head eine Freigabe von "
+        "jemand mit Schreib-, Maintain- oder Admin-Recht, der nicht der Autor "
+        "ist, damit der Guard die Arbeit fortsetzen kann.\n\n"
+        f"<details>\n<summary>Details</summary>\n\n{details}\n</details>\n"
+    )
+    if len(body) > MAX_COMMENT_BODY:
+        body = body[: MAX_COMMENT_BODY - 1] + "…\n"
+    return body
+
+
 def build_comment_body(assessment: Assessment) -> str:
     if assessment.draft and not _draft_docs_waiver_pass(assessment):
-        if not assessment.hard_fail:
-            suffix = (
-                " bytes changed vs base; a maintainer must approve the current head"
-            )
-            approval_paths: list[str] = []
-            other_reasons: list[str] = []
-            matched = False
-            for reason in assessment.reasons:
-                if reason.endswith(suffix):
-                    matched = True
-                    path = reason[: -len(suffix)].strip()
-                    if path and path not in approval_paths:
-                        approval_paths.append(path)
-                else:
-                    other_reasons.append(reason)
-            if matched:
-                details = ""
-                for path in approval_paths:
-                    details += f"- Changed paths: `{path}`\n"
-                details += (
-                    "- An ordinary approving review on the current head is enough. "
-                    "No special review text is required. The reviewer needs write, "
-                    "maintain, or admin and must not be the author.\n"
-                )
-                for path in approval_paths:
-                    details += f"- Geänderte Pfade: `{path}`\n"
-                details += (
-                    "- Eine gewöhnliche freigebende Review auf dem aktuellen Head reicht. "
-                    "Kein besonderer Review-Text. Die Person braucht Schreib-, Maintain- "
-                    "oder Admin-Recht und darf nicht der Autor sein.\n"
-                )
-                if other_reasons:
-                    details += "- Other problems: " + "; ".join(other_reasons) + "\n"
-                body = (
-                    f"{GUARD_MARKER}\n\n"
-                    "EN:\n"
-                    "Approval required\n"
-                    "This pull request needs an approval on the current head from someone "
-                    "with write, maintain, or admin who is not the author, so the guard "
-                    "can continue.\n\n"
-                    "DE:\n"
-                    "Freigabe nötig\n"
-                    "Dieser Pull Request braucht auf dem aktuellen Head eine Freigabe von "
-                    "jemand mit Schreib-, Maintain- oder Admin-Recht, der nicht der Autor "
-                    "ist, damit der Guard die Arbeit fortsetzen kann.\n\n"
-                    f"<details>\n<summary>Details</summary>\n\n{details}\n</details>\n"
-                )
-                if len(body) > MAX_COMMENT_BODY:
-                    body = body[: MAX_COMMENT_BODY - 1] + "…\n"
-                return body
         url = _steps_url(assessment.standard_url)
         return (
             f"{GUARD_MARKER}\n\n"
@@ -2632,8 +2645,8 @@ def assess_pull(
     return assessment
 
 
-def _find_own_guard_comment(
-    comments: Sequence[Mapping[str, Any]], own_id: int
+def _find_own_marked_comment(
+    comments: Sequence[Mapping[str, Any]], own_id: int, marker: str
 ) -> Mapping[str, Any] | None:
     owned: list[tuple[str, int, Mapping[str, Any]]] = []
     for comment in comments:
@@ -2642,7 +2655,7 @@ def _find_own_guard_comment(
             continue
         # Never trust type==Bot alone; numeric id must match the resolved actor.
         body = comment.get("body")
-        if not isinstance(body, str) or GUARD_MARKER not in body:
+        if not isinstance(body, str) or marker not in body:
             continue
         cid = comment.get("id")
         if not isinstance(cid, int):
@@ -2655,6 +2668,71 @@ def _find_own_guard_comment(
         return None
     owned.sort(key=lambda item: (item[0], item[1]))
     return owned[-1][2]
+
+
+def _find_own_guard_comment(
+    comments: Sequence[Mapping[str, Any]], own_id: int
+) -> Mapping[str, Any] | None:
+    return _find_own_marked_comment(comments, own_id, GUARD_MARKER)
+
+
+def _sync_approval_comment(
+    api: GitHubApi,
+    assessment: Assessment,
+    comments: Sequence[Mapping[str, Any]],
+    own_id: int,
+) -> None:
+    """Post, update, or remove the extra approval comment.
+
+    The welcome comment is independent. This comment exists only while a
+    draft still needs a maintainer approval for changed bytes.
+    """
+    wanted = build_approval_comment(assessment)
+    existing = _find_own_marked_comment(comments, own_id, APPROVAL_MARKER)
+    if wanted is None:
+        if existing is None:
+            return
+        cid = existing["id"]
+        status, _data, _ = api.request(
+            "DELETE",
+            f"/repos/{assessment.repo}/issues/comments/{cid}",
+            retry=False,
+        )
+        if status in {401, 403}:
+            raise GuardError(f"GitHub API denied ({status}) deleting approval comment")
+        if status not in {200, 204}:
+            raise GuardError(f"approval comment delete HTTP {status}")
+        assessment.writes.append(f"comment:approval:delete:{cid}")
+        return
+    if existing is not None and existing.get("body") == wanted:
+        assessment.writes.append("comment:approval:unchanged")
+        return
+    if existing is not None:
+        cid = existing["id"]
+        status, _data, _ = api.request(
+            "PATCH",
+            f"/repos/{assessment.repo}/issues/comments/{cid}",
+            body={"body": wanted},
+            retry=False,
+        )
+        if status in {401, 403}:
+            raise GuardError(f"GitHub API denied ({status}) updating approval comment")
+        if status < 200 or status >= 300:
+            raise GuardError(f"approval comment update HTTP {status}")
+        assessment.writes.append(f"comment:approval:update:{cid}")
+        return
+    status, data, _ = api.request(
+        "POST",
+        f"/repos/{assessment.repo}/issues/{assessment.pr}/comments",
+        body={"body": wanted},
+        retry=False,
+    )
+    if status in {401, 403}:
+        raise GuardError(f"GitHub API denied ({status}) creating approval comment")
+    if status < 200 or status >= 300:
+        raise GuardError(f"approval comment create HTTP {status}")
+    new_id = data.get("id") if isinstance(data, dict) else None
+    assessment.writes.append(f"comment:approval:create:{new_id}")
 
 
 def _existing_status(
@@ -2892,6 +2970,8 @@ def publish_assessment(
             raise GuardError(f"comment create HTTP {status}")
         new_id = data.get("id") if isinstance(data, dict) else None
         assessment.writes.append(f"comment:create:{new_id}")
+
+    _sync_approval_comment(api, assessment, comments, own_id)
 
     if assessment.mode == "observe":
         _post_status(

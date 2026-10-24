@@ -609,6 +609,15 @@ class FakeAPI:
                     return 200, comment, {}
             return 404, {"message": "missing"}, {}
 
+        if method_u == "DELETE" and "/issues/comments/" in path_only:
+            cid = int(path_only.rsplit("/", 1)[-1])
+            kept = [comment for comment in self.comments if comment["id"] != cid]
+            if len(kept) == len(self.comments):
+                return 404, {"message": "missing"}, {}
+            self.comments[:] = kept
+            self.writes.append(f"comment:delete:{cid}")
+            return 204, None, {}
+
         if method_u == "POST" and "/statuses/" in path_only:
             sha = path_only.rsplit("/", 1)[-1]
             payload = json.loads(body.decode()) if body else {}
@@ -1302,8 +1311,26 @@ class A38GuardE2ETests(unittest.TestCase):
                 ],
             )
         )
-        self.assertIn("<!-- PR-GUARD:A38:v1 -->", body)
-        lines = body.splitlines()
+        self.assertIn("Draft instructions", body)
+        self.assertIn("Entwurf-Hinweise", body)
+        self.assertNotIn("Approval required", body)
+        notice = a38_guard.build_approval_comment(
+            Assessment(
+                ok=False,
+                status="fail",
+                draft=True,
+                hard_fail=False,
+                reasons=[
+                    ".github/workflows/script-tests.yml bytes changed vs base; "
+                    "a maintainer must approve the current head"
+                ],
+            )
+        )
+        self.assertIsNotNone(notice)
+        assert notice is not None
+        self.assertIn("<!-- PR-GUARD:APPROVAL:v1 -->", notice)
+        self.assertNotIn("<!-- PR-GUARD:A38:v1 -->", notice)
+        lines = notice.splitlines()
         self.assertEqual(lines[lines.index("EN:") + 1], "Approval required")
         self.assertEqual(
             lines[lines.index("EN:") + 2],
@@ -1318,12 +1345,12 @@ class A38GuardE2ETests(unittest.TestCase):
             "jemand mit Schreib-, Maintain- oder Admin-Recht, der nicht der Autor "
             "ist, damit der Guard die Arbeit fortsetzen kann.",
         )
-        self.assertIn(".github/workflows/script-tests.yml", body)
+        self.assertIn(".github/workflows/script-tests.yml", notice)
         self.assertIn(
             "An ordinary approving review on the current head is enough.",
-            body,
+            notice,
         )
-        self.assertNotIn("Draft instructions", body)
+        self.assertNotIn("Draft instructions", notice)
 
     def test_draft_policy_bytes_asks_for_approval(self) -> None:
         body = a38_guard.build_comment_body(
@@ -1338,7 +1365,23 @@ class A38GuardE2ETests(unittest.TestCase):
                 ],
             )
         )
-        lines = body.splitlines()
+        self.assertIn("Draft instructions", body)
+        self.assertNotIn("Approval required", body)
+        notice = a38_guard.build_approval_comment(
+            Assessment(
+                ok=False,
+                status="fail",
+                draft=True,
+                hard_fail=False,
+                reasons=[
+                    ".github/pr-guard.json bytes changed vs base; "
+                    "a maintainer must approve the current head"
+                ],
+            )
+        )
+        self.assertIsNotNone(notice)
+        assert notice is not None
+        lines = notice.splitlines()
         self.assertEqual(lines[lines.index("EN:") + 1], "Approval required")
         self.assertEqual(
             lines[lines.index("EN:") + 2],
@@ -1353,8 +1396,8 @@ class A38GuardE2ETests(unittest.TestCase):
             "jemand mit Schreib-, Maintain- oder Admin-Recht, der nicht der Autor "
             "ist, damit der Guard die Arbeit fortsetzen kann.",
         )
-        self.assertIn(".github/pr-guard.json", body)
-        self.assertNotIn("Draft instructions", body)
+        self.assertIn(".github/pr-guard.json", notice)
+        self.assertNotIn("Draft instructions", notice)
 
     def test_draft_several_approval_paths_are_listed(self) -> None:
         body = a38_guard.build_comment_body(
@@ -1372,10 +1415,29 @@ class A38GuardE2ETests(unittest.TestCase):
                 ],
             )
         )
-        self.assertIn(".github/workflows/script-tests.yml", body)
-        self.assertIn(".github/pr-guard.json", body)
-        self.assertIn("Other problems: unclassified workflow job", body)
-        self.assertNotIn("Draft instructions", body)
+        self.assertIn("Draft instructions", body)
+        self.assertNotIn("Approval required", body)
+        notice = a38_guard.build_approval_comment(
+            Assessment(
+                ok=False,
+                status="fail",
+                draft=True,
+                hard_fail=False,
+                reasons=[
+                    ".github/workflows/script-tests.yml bytes changed vs base; "
+                    "a maintainer must approve the current head",
+                    ".github/pr-guard.json bytes changed vs base; "
+                    "a maintainer must approve the current head",
+                    "unclassified workflow job",
+                ],
+            )
+        )
+        self.assertIsNotNone(notice)
+        assert notice is not None
+        self.assertIn(".github/workflows/script-tests.yml", notice)
+        self.assertIn(".github/pr-guard.json", notice)
+        self.assertIn("Other problems: unclassified workflow job", notice)
+        self.assertNotIn("Draft instructions", notice)
 
     def test_draft_hard_fail_keeps_instructions_despite_workflow_bytes(self) -> None:
         body = a38_guard.build_comment_body(
@@ -1394,6 +1456,57 @@ class A38GuardE2ETests(unittest.TestCase):
         self.assertIn("Entwurf-Hinweise", body)
         self.assertNotIn("Approval required", body)
         self.assertNotIn("<details>", body)
+        notice = a38_guard.build_approval_comment(
+            Assessment(
+                ok=False,
+                status="fail",
+                draft=True,
+                hard_fail=True,
+                reasons=[
+                    ".github/workflows/script-tests.yml bytes changed vs base; "
+                    "a maintainer must approve the current head"
+                ],
+            )
+        )
+        self.assertIsNotNone(notice)
+        assert notice is not None
+        self.assertIn("Approval required", notice)
+        self.assertIn(".github/workflows/script-tests.yml", notice)
+
+    def test_approval_comment_is_posted_beside_the_welcome_and_then_removed(self) -> None:
+        fake = FakeAPI()
+        reason = (
+            ".github/workflows/script-tests.yml bytes changed vs base; "
+            "a maintainer must approve the current head"
+        )
+        assessment = Assessment(
+            ok=False,
+            status="fail",
+            draft=True,
+            repo=REPO,
+            pr=1,
+            reasons=[reason],
+        )
+        welcome = a38_guard.build_comment_body(assessment)
+        self.assertIn("Draft instructions", welcome)
+        self.assertNotIn("Approval required", welcome)
+        a38_guard._sync_approval_comment(fake.api(), assessment, [], BOT_ID)
+        self.assertEqual(len(fake.comments), 1)
+        self.assertIn("Freigabe nötig", fake.comments[0]["body"])
+        self.assertNotIn("Entwurf-Hinweise", fake.comments[0]["body"])
+        a38_guard._sync_approval_comment(
+            fake.api(), assessment, list(fake.comments), BOT_ID
+        )
+        self.assertIn("comment:approval:unchanged", assessment.writes)
+        self.assertEqual(len(fake.comments), 1)
+        assessment.reasons.clear()
+        a38_guard._sync_approval_comment(
+            fake.api(), assessment, list(fake.comments), BOT_ID
+        )
+        self.assertEqual(fake.comments, [])
+        self.assertTrue(
+            any(item.startswith("comment:approval:delete:") for item in assessment.writes)
+        )
 
     def test_draft_title_only_generated_with_hard_fails(self) -> None:
         fake = FakeAPI()
