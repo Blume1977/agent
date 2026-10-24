@@ -2595,6 +2595,80 @@ def test_leave_draft_does_not_ready_when_the_exception_is_revoked_after_the_comm
     assert "Two review runs are required." in bodies
 
 
+def test_leave_draft_posts_the_revoked_comment_on_a_later_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _ready_side_env(tmp_path, monkeypatch, patch_github=True)
+    _list_opener(fake)
+    fake.fail_pr_guard_after_comment = True
+    from agent_cli import coordinator_github
+
+    marked = coordinator_github.execute_github
+
+    def deliver_then_mark(store, runner, *, activity_ids):  # noqa: ANN001
+        for aid in activity_ids:
+            row = store.row("activity", aid) or {}
+            if row.get("type") != "comment.post" or row.get("execution_status") != "pending":
+                continue
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            fake(
+                [
+                    "gh",
+                    "pr",
+                    "comment",
+                    str(payload.get("number") or 42),
+                    "--repo",
+                    str(payload.get("repo") or "example/project"),
+                    "--body",
+                    str(payload.get("body") or ""),
+                ]
+            )
+        return marked(store, runner, activity_ids=activity_ids)
+
+    monkeypatch.setattr(coordinator_github, "execute_github", deliver_then_mark)
+    tid = "aa000001-0000-4000-8000-000000000053"
+    task = _seed_ready_side_task(
+        store,
+        worker,
+        fake,
+        tid=tid,
+        phase="leave_draft",
+        checklist_codex={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        seed_formal_review=True,
+        extra_evidence={
+            "formal_head": fake.head,
+            "readiness_head": fake.head,
+        },
+    )
+    lines = phase_leave_draft(store, worker, task, fake)
+    assert fake.ready_calls == 0
+    assert any("temporarily unavailable" in line for line in lines)
+    bodies = "\n".join(str(comment.get("body") or "") for comment in fake.pr_comments)
+    assert "one review run is approved" in bodies
+    assert "The one-review exception was no longer present" not in bodies
+
+    fake.pr_guard_body = json.dumps(
+        {
+            "schema": "pr-guard/v1",
+            "a38": {"enforce": [], "exclude": [], "default": "enforce"},
+            "one_review_authors": [],
+        }
+    )
+    task = store.row("task", tid)
+    assert task is not None
+    with pytest.raises(
+        CoordinatorError,
+        match="one-review exception revoked before leave-draft",
+    ):
+        phase_leave_draft(store, worker, task, fake)
+    assert fake.ready_calls == 0
+    assert fake.pr["isDraft"] is True
+    bodies = "\n".join(str(comment.get("body") or "") for comment in fake.pr_comments)
+    assert "one review run is approved" in bodies
+    assert "The one-review exception was no longer present" in bodies
+    assert "Two review runs are required." in bodies
+
+
 def test_readiness_accepts_approved_codex_pr_when_checklist_not_both_na(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

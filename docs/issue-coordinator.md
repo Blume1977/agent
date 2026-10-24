@@ -228,7 +228,14 @@ for worker in workers.values():
    cleared). Stdout must be the fixed JSON readiness contract below (trusted
    operator script output — not model/repo input). Re-verify clean signed head
    **after** the command, re-observe CI fresh (no stale `ci_green`), unchanged PR
-   head, author/base/mergeability, tests, and all four same-head gates. Fresh
+   head, author/base/mergeability, tests, and all four same-head gates. The two
+   `codex-pr` gates are omitted on readiness, formal approve, and leave-draft
+   only when both Codex checklist keys are already `n_a`, the evidence is
+   exactly `second review not posted`, and the opener is listed in
+   one_review_authors in the trusted .github/pr-guard.json on the default
+   branch. A missing file, a missing key, or an empty list keeps all four
+   gates required. An entry that exists only on the pull request head does not
+   count. Fresh
    CI rechecks on readiness / formal_approve / leave-draft (including after the
    Ready evidence comment) treat pending / absent-yet evidence and transient
    observation or PR-metadata transport as same-phase retry: no new authorized
@@ -264,7 +271,12 @@ for worker in workers.values():
    When that comment relied on the one-review exception, leave-draft reads the
    trusted list again before Ready. A transport failure retries and does not
    set Ready. If the opener is no longer listed, it posts a new comment that
-   Ready was not set and does not call `gh pr ready`. A later leave-draft that
+   Ready was not set and does not call `gh pr ready`. The same correction is
+   posted on a later leave-draft when that one-review evidence comment is
+   already done, both Codex keys are still `n_a` with evidence exactly
+   `second review not posted`, and the live list no longer grants the
+   exception, before the gate check can hide it. A transport failure on that
+   later read retries and does not set Ready. A later leave-draft that
    has both review gates posts its own evidence comment. One review is enough
    only when the pull request opener is listed in one_review_authors in the
    trusted .github/pr-guard.json on the default branch. A missing file, a

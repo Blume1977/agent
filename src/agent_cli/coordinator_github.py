@@ -1412,6 +1412,49 @@ def _revoked_exception_comment(head: str) -> str:
     )
 
 
+def _raise_revoked_one_review(
+    store: Store,
+    worker: WorkerConfig,
+    runner: Runner,
+    task: dict[str, Any],
+    *,
+    target: str,
+    number: int,
+    head: str,
+) -> None:
+    """Post the correction once, then refuse Ready.
+
+    One review is enough only when the pull request opener is listed in
+    one_review_authors in the trusted .github/pr-guard.json on the default
+    branch. A missing file, a missing key, or an empty list keeps two reviews
+    required. An entry that exists only on the pull request head does not count.
+    """
+    withdrawn_id = str(
+        uuid5(NAMESPACE_URL, f"coordinator-ready-withdrawn:{task['id']}:{head}")
+    )
+    existing = store.row("activity", withdrawn_id)
+    if existing is None or existing.get("execution_status") != "done":
+        queue_activity(
+            store,
+            activity_id=withdrawn_id,
+            session_id=worker.session_id,
+            typ="comment.post",
+            payload={
+                "repo": target,
+                "number": number,
+                "body": _revoked_exception_comment(head),
+                "target": "pr",
+            },
+        )
+        execute_github(store, runner, activity_ids=(withdrawn_id,))
+        withdrawn = store.row("activity", withdrawn_id)
+        if withdrawn is None or withdrawn.get("execution_status") != "done":
+            raise CoordinatorError("revoked one-review comment not verified")
+    raise CoordinatorError(
+        "one-review exception revoked before leave-draft; two reviews are required"
+    )
+
+
 def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner) -> list[str]:
     c = coord(task)
     target = target_repo(task)
@@ -1456,6 +1499,25 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
     skip_codex = _codex_skip(store, worker, task, runner, phase="leave_draft", head=head)
     if isinstance(skip_codex, list):
         return skip_codex
+    # A previous tick already published the one-review evidence comment. If the
+    # live list no longer grants the exception, correct it before the gate
+    # loop. Keys that are no longer n_a are a real two-review pass and still
+    # go through the gates. A transport error already returned above.
+    if not skip_codex and _both_codex_reviews_na(store, task["id"]):
+        one_id = str(
+            uuid5(NAMESPACE_URL, f"coordinator-ready-comment:{task['id']}:{head}:one")
+        )
+        one_row = store.row("activity", one_id)
+        if one_row is not None and one_row.get("execution_status") == "done":
+            _raise_revoked_one_review(
+                store,
+                worker,
+                runner,
+                task,
+                target=target,
+                number=number,
+                head=head,
+            )
     for stage, dimension, vendor in GATE_PAIRS:
         if stage == "codex-pr" and skip_codex:
             continue
@@ -1542,27 +1604,14 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
         if isinstance(again, list):
             return again
         if not again:
-            withdrawn_id = str(
-                uuid5(NAMESPACE_URL, f"coordinator-ready-withdrawn:{task['id']}:{head}")
-            )
-            queue_activity(
+            _raise_revoked_one_review(
                 store,
-                activity_id=withdrawn_id,
-                session_id=worker.session_id,
-                typ="comment.post",
-                payload={
-                    "repo": target,
-                    "number": number,
-                    "body": _revoked_exception_comment(head),
-                    "target": "pr",
-                },
-            )
-            execute_github(store, runner, activity_ids=(withdrawn_id,))
-            withdrawn = store.row("activity", withdrawn_id)
-            if withdrawn is None or withdrawn.get("execution_status") != "done":
-                raise CoordinatorError("revoked one-review comment not verified")
-            raise CoordinatorError(
-                "one-review exception revoked before leave-draft; two reviews are required"
+                worker,
+                runner,
+                task,
+                target=target,
+                number=number,
+                head=head,
             )
     ready = scoped_runner(["gh", "pr", "ready", str(number), "--repo", target])
     if ready.returncode != 0:

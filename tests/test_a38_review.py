@@ -2030,6 +2030,62 @@ def test_wrong_head_second_run_does_not_block() -> None:
     ok, reasons = _gate(_gate_api(), [_first_run_comment(), comment])
     assert BLOCKING_REVIEW_REASON not in reasons
     assert reasons == [SECOND_REVIEW_MISSING]
+    excused, excused_reasons = _gate(
+        _gate_api(), [_first_run_comment(), comment], one_review_author=True
+    )
+    assert excused is True
+    assert excused_reasons == []
+    assert "review ancestry unavailable" not in reasons
+    assert "review ancestry unavailable" not in excused_reasons
+
+
+def _ancestry_down_api() -> _GateApi:
+    to_head = f"/repos/o/r/compare/{OTHER}...{HEAD}"
+    return _GateApi(
+        {BASE: "2026-07-01T00:00:00Z", HEAD: "2026-09-01T00:00:00Z"},
+        {to_head: (500, {}, {})},
+    )
+
+
+def _ancestry_down_second(*, cid: int, created: str) -> dict:
+    payload = _v2_second(blocks_merge=True, defects=1)
+    payload["head"] = OTHER
+    return _second_run_comment(payload, cid=cid, created=created)
+
+
+def test_unreadable_second_run_ancestry_fails_closed_for_every_opener() -> None:
+    second = _ancestry_down_second(cid=2, created="2026-09-03T00:00:00Z")
+    comments = [_first_run_comment(), second]
+    ok, reasons = _gate(_ancestry_down_api(), comments, one_review_author=True)
+    assert ok is False
+    assert reasons == ["review ancestry unavailable"]
+    plain, plain_reasons = _gate(_ancestry_down_api(), comments)
+    assert plain is False
+    assert plain_reasons == ["review ancestry unavailable"]
+
+
+def test_newer_unreadable_second_run_does_not_hide_an_older_signal() -> None:
+    newer = _ancestry_down_second(cid=3, created="2026-09-04T00:00:00Z")
+    clear = _second_run_comment(
+        _v2_second(blocks_merge=False, defects=0),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    ok, reasons = _gate(
+        _ancestry_down_api(), [_first_run_comment(), clear, newer]
+    )
+    assert ok is True
+    assert reasons == []
+    blocked = _second_run_comment(
+        _v2_second(blocks_merge=True, defects=2),
+        cid=2,
+        created="2026-09-03T00:00:00Z",
+    )
+    blocked_ok, blocked_reasons = _gate(
+        _ancestry_down_api(), [_first_run_comment(), blocked, newer]
+    )
+    assert blocked_ok is False
+    assert blocked_reasons == [BLOCKING_REVIEW_REASON]
 
 
 def test_gate_keeps_ready_when_second_run_defects_do_not_block() -> None:

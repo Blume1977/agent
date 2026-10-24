@@ -1488,13 +1488,18 @@ def second_run_status(
     whose declaration or record is invalid, whose prompt or record is missing,
     whose sentence does not match the flag, whose pass-run titles do not name
     that model, or whose flag is not a boolean paired with a counted defect,
-    is skipped. A declared head that is not this pull request and not an
-    ancestor the caller already proved is skipped before those checks.
-    ``absent`` is no well-formed second run. Under the standard that absence
-    fails Ready. One review is enough only when the opener is listed in
-    one_review_authors on the trusted default-branch file. A missing file,
-    a missing key, or an empty list keeps that failure. An entry only on
-    the pull request head does not count.
+    is skipped. A declared head that is not this pull request is skipped
+    before those checks. It is not an ancestry failure. A second run whose
+    ancestry cannot be read is remembered, and the search continues. An
+    older well-formed second run remains the signal and is ``blocking`` or
+    ``clear``. If none remains, the result is ``review ancestry unavailable``,
+    not ``absent``. ``absent`` is no well-formed second run and no unread
+    ancestry. Under the standard that absence fails Ready. One review is
+    enough only when the opener is listed in one_review_authors on the
+    trusted default-branch file. A missing file, a missing key, or an empty
+    list keeps that failure. An entry only on the pull request head does
+    not count. Unreadable ancestry fails Ready for every opener, including
+    one on that list.
     This does not choose the first-run completion comment.
     """
     committed = _utc(committed_at)
@@ -1511,12 +1516,19 @@ def second_run_status(
         ancestry_unavailable=ancestry_unavailable,
     )
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    ancestry_reason: str | None = None
     for _stamp, _cid, comment, forced in candidates:
-        if forced:
-            continue
         body = comment.get("body")
         text = body if isinstance(body, str) else ""
         if _lane_ids_of(text) != set(RUNS[1]):
+            continue
+        # A wrong head is not this pull request. Keep looking. Unreadable
+        # ancestry is remembered and must not hide an older well-formed run.
+        if forced == "review head does not match the pull request":
+            continue
+        if forced:
+            if ancestry_reason is None:
+                ancestry_reason = forced
             continue
         try:
             payload = parse_review_block(text)
@@ -1537,6 +1549,8 @@ def second_run_status(
         ):
             continue
         return "blocking" if signal else "clear"
+    if ancestry_reason is not None:
+        return ancestry_reason
     return "absent"
 
 
@@ -1970,7 +1984,11 @@ def evaluate_review_gate(
     ``one_review_authors`` on the trusted default-branch pr-guard config.
     A missing file, a missing key, or an empty list keeps two reviews required.
     An entry that exists only on the pull request head does not count.
-    A blocking second run still fails Ready for that opener.
+    A blocking second run still fails Ready for that opener. An unreadable
+    second-run ancestry fails Ready for every opener, including one listed
+    in one_review_authors. A missing file, a missing key, or an empty list
+    keeps two reviews required. An entry that exists only on the pull
+    request head does not count.
     """
     try:
         guard_id, _login = api.resolve_own_user()
@@ -2033,8 +2051,14 @@ def evaluate_review_gate(
             )
             if status == "blocking":
                 _add(reasons, BLOCKING_REVIEW_REASON)
-            elif status == "absent" and not one_review_author:
-                _add(reasons, SECOND_REVIEW_MISSING)
+            elif status == "absent":
+                if not one_review_author:
+                    _add(reasons, SECOND_REVIEW_MISSING)
+            elif status != "clear":
+                # Unreadable ancestry, and any other non-signal reason.
+                # This fails Ready for every opener, including one listed
+                # in one_review_authors.
+                _add(reasons, status)
     reasons.extend(_load_threads(api, repo, number))
     if reasons:
         return False, reasons

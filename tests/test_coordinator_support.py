@@ -203,6 +203,7 @@ class FakeGh:
         self.commit_count = 0
         self.pr_guard_body: str | None = None
         self.revoke_one_review_on_pr_comment = False
+        self.fail_pr_guard_after_comment = False
         self.ready_calls = 0
 
     def __call__(self, argv: list[str]) -> Completed:
@@ -425,6 +426,9 @@ class FakeGh:
         if argv[:2] == ["gh", "api"] and str(argv[-1]).startswith("repos/example/project/commits/"):
             return Completed(0, json.dumps({"sha": "c" * 40}), "")
         if argv[:2] == ["gh", "api"] and "contents/.github/pr-guard.json" in str(argv[-1]):
+            if self.fail_pr_guard_after_comment and self.pr_comments:
+                self.fail_pr_guard_after_comment = False
+                return Completed(1, "", "connection reset")
             if not self.pr_guard_body:
                 return Completed(1, "", "HTTP 404: Not Found")
             return Completed(0, self.pr_guard_body, "")
