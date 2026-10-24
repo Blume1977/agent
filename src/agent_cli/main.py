@@ -2464,9 +2464,7 @@ def _assert_ready(store: Store, task: dict) -> None:
             if not isinstance(evidence, str) or evidence == "":
                 die("task is not done: checklist mergeable=ja requires evidence")
     snap = load_task_dict(store, tid)
-    login, config = _done_one_review(task, snap.get("checklist") or {})
-    snap["pull_opener"] = login
-    snap["trusted_pr_guard"] = config
+    _attach_live_one_review(store, snap, row=task)
     blocking = ready_for_done_blocking(snap)
     if not blocking:
         return
@@ -2535,11 +2533,7 @@ def cmd_allow(args: list[str]) -> None:
                 die("Usage: agent allow --action task-done --task ID")
             else:
                 snap = load_task_dict(store, task_id)
-                row = store.row("task", task_id)
-                if row is not None:
-                    login, config = _done_one_review(row, snap.get("checklist") or {})
-                    snap["pull_opener"] = login
-                    snap["trusted_pr_guard"] = config
+                _attach_live_one_review(store, snap)
                 session = _need(store, "session", str(snap.get("session_id") or ""))
                 _require_skill(session, "spine")
                 session_tasks = [snap]
@@ -2560,7 +2554,24 @@ def cmd_allow(args: list[str]) -> None:
                 session_tasks=[],
                 create_has_draft=create_has_draft,
             )
+        elif action == "claim-done":
+            # Same done predicate as task-done. Read the trusted list live
+            # only when both second-review keys are already n_a.
+            if session_id:
+                session = _need(store, "session", session_id)
+                _require_skill(session, "spine")
+                session_tasks = load_session_tasks(store, session_id)
+                for snap in session_tasks:
+                    _attach_live_one_review(store, snap)
+            result = evaluate_allow(
+                action,
+                session_id=session_id,
+                task_id=task_id,
+                session_tasks=session_tasks,
+                create_has_draft=create_has_draft,
+            )
         else:
+            # pr-ready stays on the local snapshot and does not call GitHub.
             if session_id:
                 session = _need(store, "session", session_id)
                 _require_skill(session, "spine")
@@ -2728,9 +2739,29 @@ def _task_repo_and_pr(task: dict) -> tuple[str, str]:
     return repo, str(number or "")
 
 
+def _attach_live_one_review(
+    store: Store, snap: dict, row: dict | None = None
+) -> None:
+    """Copy the live exception onto one done snapshot.
+
+    ``load_task_dict`` leaves the opener empty and the trusted config unset.
+    GitHub is read only when both Codex keys are already ``n_a``. A lookup
+    error stops the command and does not grant the exception. The stored
+    payload copy is not read. ``pr-ready`` does not call this.
+    """
+    if row is None:
+        row = store.row("task", str(snap.get("id") or ""))
+    if row is None:
+        return
+    login, config = _done_one_review(row, snap.get("checklist") or {})
+    snap["pull_opener"] = login
+    snap["trusted_pr_guard"] = config
+
+
 def _done_one_review(task: dict, checklist: dict) -> tuple[str, dict | None]:
     """Live opener and trusted config for a done decision.
 
+    Callers are task state done, ``allow task-done``, and ``allow claim-done``.
     ``load_task_dict`` stays local and does not call this. The stored payload
     copy is not this decision. Both Codex keys must already be ``n_a`` before
     a live read. A missing pull, a missing file, or a lookup error does not

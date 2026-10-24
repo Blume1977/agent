@@ -91,6 +91,125 @@ def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.Mo
 
 
 @pytest.mark.no_pg
+@pytest.mark.no_pg
+def test_claim_done_reads_the_live_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from agent_cli.pr_guard_config import PrGuardLookupError
+    from test_allow import _ready_task
+
+    run(tmp_path, ["init"])
+    run(
+        tmp_path,
+        [
+            "session",
+            "register",
+            "--id",
+            "sess-1",
+            "--kind",
+            "human",
+            "--skill",
+            "spine",
+        ],
+    )
+    capsys.readouterr()
+    run(
+        tmp_path,
+        [
+            "task",
+            "create",
+            "--session",
+            "sess-1",
+            "--workflow",
+            "implement",
+            "--title",
+            "Ship",
+        ],
+    )
+    tid = _last_task_id(capsys.readouterr().out)
+    snap = _ready_task(session_id="sess-1")
+    snap["id"] = tid
+    snap["checklist"]["codex_pr_quality"] = "n_a"
+    snap["checklist"]["codex_pr_logic"] = "n_a"
+    snap["gates"] = [gate for gate in snap["gates"] if gate["stage"] == "grok-pr"]
+
+    def load_snaps(_store: object, _session_id: str) -> list[dict]:
+        fresh = dict(snap)
+        fresh["checklist"] = dict(snap["checklist"])
+        fresh["gates"] = list(snap["gates"])
+        fresh["pull_opener"] = ""
+        fresh["trusted_pr_guard"] = None
+        return [fresh]
+
+    monkeypatch.setattr("agent_cli.main.load_session_tasks", load_snaps)
+
+    def listed(_task: dict) -> tuple[str, dict | None]:
+        return "alice", {"one_review_authors": ["alice"]}
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", listed)
+    run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
+    assert "allow action=claim-done" in capsys.readouterr().out
+
+    def missing_list(_task: dict) -> tuple[str, dict | None]:
+        return "alice", None
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", missing_list)
+    with pytest.raises(SystemExit):
+        run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
+    denied = capsys.readouterr()
+    assert "codex_pr_quality=n_a" in f"{denied.out}\n{denied.err}"
+
+    def down(_task: dict) -> tuple[str, dict | None]:
+        raise PrGuardLookupError("down")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", down)
+    with pytest.raises(SystemExit, match="trusted review list could not be read"):
+        run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
+
+
+@pytest.mark.no_pg
+def test_pr_ready_does_not_read_the_trusted_review_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom(_task: dict) -> tuple[str, dict | None]:
+        raise AssertionError("live read")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", boom)
+    run(tmp_path, ["init"])
+    run(
+        tmp_path,
+        [
+            "session",
+            "register",
+            "--id",
+            "sess-1",
+            "--kind",
+            "human",
+            "--skill",
+            "spine",
+        ],
+    )
+    capsys.readouterr()
+    run(
+        tmp_path,
+        [
+            "task",
+            "create",
+            "--session",
+            "sess-1",
+            "--workflow",
+            "implement",
+            "--title",
+            "Ship",
+        ],
+    )
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        run(tmp_path, ["allow", "--action", "pr-ready", "--session", "sess-1"])
+    with pytest.raises(SystemExit):
+        run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
+
+
 def test_load_task_dict_does_not_read_the_trusted_review_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
