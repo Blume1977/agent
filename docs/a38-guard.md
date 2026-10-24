@@ -87,7 +87,7 @@ Policy JSON uses the strict `a38/v1` schema. Workflow YAML is safely loaded with
 
 A policy update must not authorize itself. Another maintainer authorizes the proposed **head manifest as data** with a normal APPROVED GitHub review on the current head. No special review text is required. The review body is ignored.
 
-On an open draft the guard always posts the welcome comment. When a workflow or policy change still needs this approval, it also posts a separate comment, `Approval required` / `Freigabe nötig`, marked `<!-- PR-GUARD:APPROVAL:v1 -->`. That comment does not replace the welcome. When the approval is no longer required, the guard deletes the extra comment.
+On an open draft the guard always posts the welcome comment. When a workflow or policy change still needs this approval, it also posts a separate comment, `Approval required` / `Freigabe nötig`, marked `<!-- PR-GUARD:APPROVAL:v1 -->`. That comment does not replace the welcome. It stays while the approval is still required, including when the pull request is Ready. When the approval is no longer required, the guard deletes the extra comment.
 
 The review's GitHub `commit_id` must equal the current head. The reviewer must differ from the PR author by numeric account ID and currently have write, maintain or admin permission on the target repository. The permission response must confirm the same numeric identity.
 

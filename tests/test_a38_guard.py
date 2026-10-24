@@ -1510,6 +1510,38 @@ class A38GuardE2ETests(unittest.TestCase):
             any(item.startswith("comment:approval:delete:") for item in assessment.writes)
         )
 
+    def test_ready_pull_request_keeps_the_approval_comment(self) -> None:
+        fake = FakeAPI()
+        reason = (
+            ".github/workflows/script-tests.yml bytes changed vs base; "
+            "a maintainer must approve the current head"
+        )
+        assessment = Assessment(
+            ok=False,
+            status="fail",
+            draft=False,
+            repo=REPO,
+            pr=1,
+            reasons=[reason],
+        )
+        notice = a38_guard.build_approval_comment(assessment)
+        self.assertIsNotNone(notice)
+        assert notice is not None
+        self.assertIn("Approval required", notice)
+        self.assertNotIn("Draft instructions", notice)
+        a38_guard._sync_approval_comment(fake.api(), assessment, [], BOT_ID)
+        self.assertEqual(len(fake.comments), 1)
+        a38_guard._sync_approval_comment(
+            fake.api(), assessment, list(fake.comments), BOT_ID
+        )
+        self.assertEqual(len(fake.comments), 1)
+        self.assertIn("comment:approval:unchanged", assessment.writes)
+        assessment.reasons.clear()
+        a38_guard._sync_approval_comment(
+            fake.api(), assessment, list(fake.comments), BOT_ID
+        )
+        self.assertEqual(fake.comments, [])
+
     def test_draft_title_only_generated_with_hard_fails(self) -> None:
         fake = FakeAPI()
         fake.pull = fake._pull(

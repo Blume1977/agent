@@ -177,10 +177,12 @@ pull request to draft when its JSON boolean `blocks_merge` is true and
 `defects` is an integer >= 1. The reason is `Review defects block the merge`.
 A write hold does not keep Ready. A newer well-formed second-run comment
 with `blocks_merge` false clears that. A comment that does not parse, whose
-visible sentence does not match `blocks_merge`, whose pass-run titles do not
-name one shared non-empty model, or whose `blocks_merge` is not that boolean
-paired with a counted `defects`, does not clear an older blocking comment and
-does not itself return the pull request to draft. Under the standard that
+declaration or human record is invalid (including a missing prompt or a
+missing record), whose visible sentence does not match `blocks_merge`, whose
+pass-run titles do not name one shared non-empty model, or whose
+`blocks_merge` is not that boolean paired with a counted `defects`, does not
+clear an older blocking comment and does not itself return the pull request
+to draft. Under the standard that
 comment leaves the second review missing (`second review comment missing`).
 For an opener on the exception list, that absence does not fail Ready. The
 guard does not judge that model name. Posted before the first run, the second

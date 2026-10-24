@@ -1600,13 +1600,13 @@ def _approval_split(reasons: Sequence[str]) -> tuple[list[str], list[str]]:
 
 
 def build_approval_comment(assessment: Assessment) -> str | None:
-    """Separate draft comment when changed bytes still need approval.
+    """Separate comment when changed bytes still need approval.
 
     The welcome comment stays. This one is absent when nothing needs that
-    approval. A docs-waiver draft keeps the welcome and does not get this
-    extra posting.
+    approval, including on a pull request that is not a draft. A docs-waiver
+    draft keeps the welcome and does not get this extra posting.
     """
-    if not assessment.draft or _draft_docs_waiver_pass(assessment):
+    if _draft_docs_waiver_pass(assessment):
         return None
     paths, others = _approval_split(assessment.reasons)
     if not paths:
@@ -2688,8 +2688,9 @@ def _sync_approval_comment(
 ) -> None:
     """Post, update, or remove the extra approval comment.
 
-    The welcome comment is independent. This comment exists only while a
-    draft still needs a maintainer approval for changed bytes.
+    The welcome comment is independent. This comment exists while changed
+    bytes still need a maintainer approval, including when the pull request
+    is Ready. It is removed when that approval is no longer required.
     ``delete_only`` removes a leftover approval comment and never posts one.
     """
     wanted = None if delete_only else build_approval_comment(assessment)
