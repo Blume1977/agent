@@ -1531,6 +1531,48 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
     return [f"left draft {target}#{number}; awaiting human merge"]
 
 
+def _record_human_merge(
+    store: Store,
+    worker: WorkerConfig,
+    *,
+    target: str,
+    number: int,
+    sha: str,
+    merged_at: str,
+    login: str,
+    merged_type: str,
+    expected_head: str,
+    url: str,
+    pr_open_id: Any,
+) -> None:
+    """Record the human merge once. This does not mark the task done."""
+    mid = str(uuid5(NAMESPACE_URL, f"coordinator-merged:{target}:{number}:{sha}"))
+    if store.row("activity", mid) is not None:
+        return
+    store.write(
+        "activity",
+        "insert",
+        mid,
+        {
+            "id": mid,
+            "session_id": worker.session_id,
+            "type": "pr.merged",
+            "payload": {
+                "repo": target,
+                "number": number,
+                "url": url,
+                "merge_sha": sha,
+                "merged_at": merged_at,
+                "merged_by": login.casefold(),
+                "merged_by_type": merged_type,
+                "reviewed_head": expected_head,
+                "pr_open_id": pr_open_id,
+            },
+            "execution_status": "done",
+        },
+    )
+
+
 def phase_await_merge(store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner) -> list[str]:
     c = coord(task)
     target = target_repo(task)
@@ -1586,9 +1628,23 @@ def phase_await_merge(store: Store, worker: WorkerConfig, task: dict[str, Any], 
                 "describing the actual result"
             ]
         snap = _task_snapshot(store, task["id"])
+        pr_open_id = c.get("pr_open_activity_id")
         try:
             opener, config = _trusted_done_review(store, worker, task, runner)
         except CiObservationTransportError:
+            _record_human_merge(
+                store,
+                worker,
+                target=target,
+                number=number,
+                sha=sha,
+                merged_at=merged_at,
+                login=login,
+                merged_type=merged_type,
+                expected_head=expected_head,
+                url=str(info.get("html_url") or ""),
+                pr_open_id=pr_open_id,
+            )
             return ["trusted review list could not be read; retrying await_merge"]
         snap["pull_opener"] = opener
         snap["trusted_pr_guard"] = config
@@ -1601,31 +1657,19 @@ def phase_await_merge(store: Store, worker: WorkerConfig, task: dict[str, Any], 
         if not allow.allowed:
             return [f"human merge observed; task-done blocked: {allow.reason} {allow.blocking}"]
 
-        pr_open_id = c.get("pr_open_activity_id")
-        mid = str(uuid5(NAMESPACE_URL, f"coordinator-merged:{target}:{number}:{sha}"))
-        if store.row("activity", mid) is None:
-            store.write(
-                "activity",
-                "insert",
-                mid,
-                {
-                    "id": mid,
-                    "session_id": worker.session_id,
-                    "type": "pr.merged",
-                    "payload": {
-                        "repo": target,
-                        "number": number,
-                        "url": info.get("html_url") or "",
-                        "merge_sha": sha,
-                        "merged_at": merged_at,
-                        "merged_by": login.casefold(),
-                        "merged_by_type": merged_type,
-                        "reviewed_head": expected_head,
-                        "pr_open_id": pr_open_id,
-                    },
-                    "execution_status": "done",
-                },
-            )
+        _record_human_merge(
+            store,
+            worker,
+            target=target,
+            number=number,
+            sha=sha,
+            merged_at=merged_at,
+            login=login,
+            merged_type=merged_type,
+            expected_head=expected_head,
+            url=str(info.get("html_url") or ""),
+            pr_open_id=pr_open_id,
+        )
         source = c["source"]
         assigned_id = source.get("assigned_id")
         if isinstance(assigned_id, str) and assigned_id:

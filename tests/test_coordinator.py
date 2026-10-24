@@ -632,6 +632,7 @@ def test_human_merge_stays_blocked_when_the_trusted_file_is_missing(
     task = store.row("task", "55555555-5555-4555-8555-555555555552")
     assert task is not None and task["state"] != "done"
     assert any("task-done blocked" in line for line in lines)
+    assert not any(row.get("type") == "pr.merged" for row in store.rows("activity"))
 
 
 def test_human_merge_retries_when_the_trusted_list_cannot_be_read(
@@ -655,6 +656,9 @@ def test_human_merge_retries_when_the_trusted_list_cannot_be_read(
     task = store.row("task", "55555555-5555-4555-8555-555555555553")
     assert task is not None and task["state"] != "done"
     assert any("trusted review list could not be read" in line for line in lines)
+    merged = [row for row in store.rows("activity") if row.get("type") == "pr.merged"]
+    assert merged and merged[0]["payload"]["merged_by"] == "human-owner"
+    assert not any(row.get("type") == "issue.assigned.ack" for row in store.rows("activity"))
 
 
 def test_merge_missing_type_is_not_human(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
