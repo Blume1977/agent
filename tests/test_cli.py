@@ -90,8 +90,8 @@ def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.Mo
         )
 
 
-@pytest.mark.no_pg
-@pytest.mark.no_pg
+# Not no_pg: agent init opens the store. no_pg leaves AGENT_PG_DSN unset, so
+# init creates a cluster and fails where the suite only has AGENT_TEST_PG.
 def test_claim_done_reads_the_live_exception(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -167,7 +167,6 @@ def test_claim_done_reads_the_live_exception(
         run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
 
 
-@pytest.mark.no_pg
 def test_pr_ready_does_not_read_the_trusted_review_list(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
