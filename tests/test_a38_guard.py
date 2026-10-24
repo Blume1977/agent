@@ -2402,6 +2402,36 @@ class A38PrGuardConfigScopeTests(unittest.TestCase):
         self.assertEqual(a38_guard._assessment_exit_code(result), 0)
         self.assertFalse(any(w.startswith("comment:") for w in result.writes))
 
+    def test_excluded_draft_deletes_only_the_leftover_approval_comment(self) -> None:
+        fake = FakeAPI()
+        fake.pull = fake._pull(HEAD, BASE, draft=True)
+        self._release_pull(fake)
+        del fake.files[(BASE, ".github/a38.json")]
+        welcome = {
+            "id": 41,
+            "body": f"{GUARD_MARKER}\nEN:\nDraft instructions\n",
+            "user": {"id": BOT_ID, "login": "github-actions[bot]"},
+            "updated_at": "2026-09-05T11:00:00Z",
+            "created_at": "2026-09-05T11:00:00Z",
+        }
+        approval = {
+            "id": 42,
+            "body": f"{a38_guard.APPROVAL_MARKER}\nEN:\nApproval required\n",
+            "user": {"id": BOT_ID, "login": "github-actions[bot]"},
+            "updated_at": "2026-09-05T11:00:01Z",
+            "created_at": "2026-09-05T11:00:01Z",
+        }
+        fake.comments.extend([welcome, approval])
+        result = reconcile_pull(fake.api(), REPO, 1, publish=True)
+        self.assertEqual(result.status, "not_applicable")
+        self.assertTrue(
+            any(item.startswith("comment:approval:delete:") for item in result.writes)
+        )
+        self.assertFalse(any(item.startswith("comment:approval:create:") for item in result.writes))
+        self.assertEqual([comment["id"] for comment in fake.comments], [41])
+        self.assertIn(GUARD_MARKER, fake.comments[0]["body"])
+        self.assertNotIn(a38_guard.APPROVAL_MARKER, fake.comments[0]["body"])
+
     def test_invalidate_status_skips_drafts(self) -> None:
         fake = FakeAPI()
         snap = fetch_pull(fake.api(), REPO, 1)

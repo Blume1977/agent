@@ -29,6 +29,67 @@ def _last_agent_id(out: str) -> str:
     return agent_line.split()[1]
 
 
+@pytest.mark.no_pg
+def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_cli.allow import ready_for_done_blocking
+    from agent_cli.main import _done_one_review
+    from agent_cli.pr_guard_config import PrGuardLookupError
+    from test_allow import _ready_task
+
+    stored = {"one_review_authors": ["alice"]}
+    calls = {"n": 0}
+
+    def live(task: dict) -> tuple[str, dict | None]:
+        calls["n"] += 1
+        assert task["payload"]["one_review_author"]["trusted_pr_guard"] == stored
+        return "alice", None
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", live)
+    task = {
+        "payload": {
+            "one_review_author": {
+                "pull_opener": "alice",
+                "trusted_pr_guard": stored,
+            }
+        }
+    }
+    login, config = _done_one_review(
+        task,
+        {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+    )
+    assert calls["n"] == 1
+    assert login == "alice"
+    assert config is None
+    done = _ready_task()
+    done["checklist"]["codex_pr_quality"] = "n_a"
+    done["checklist"]["codex_pr_logic"] = "n_a"
+    done["gates"] = [gate for gate in done["gates"] if gate["stage"] == "grok-pr"]
+    done["pull_opener"] = login
+    done["trusted_pr_guard"] = config
+    blocking = " ".join(ready_for_done_blocking(done))
+    assert "codex_pr_quality=n_a" in blocking
+    assert "codex_pr_logic=n_a" in blocking
+
+    def boom(_task: dict) -> tuple[str, dict | None]:
+        raise AssertionError("live read")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", boom)
+    assert _done_one_review(
+        task,
+        {"codex_pr_quality": "ja", "codex_pr_logic": "ja"},
+    ) == ("", None)
+
+    def missing(_task: dict) -> tuple[str, dict | None]:
+        raise PrGuardLookupError("down")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", missing)
+    with pytest.raises(SystemExit, match="trusted review list could not be read"):
+        _done_one_review(
+            task,
+            {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        )
+
+
 def test_task_repo_and_pr_uses_the_pull_target_not_the_push_remote() -> None:
     from agent_cli.main import _task_repo_and_pr
 

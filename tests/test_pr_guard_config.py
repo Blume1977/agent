@@ -292,6 +292,25 @@ def test_fetch_trusted_pr_guard_missing_file_is_not_an_exception() -> None:
     assert one_review_for(None, "alice") is False
 
 
+def test_fetch_trusted_pr_guard_sha_containing_404_is_not_a_missing_file() -> None:
+    sha = ("b" * 37) + "404"
+
+    def runner(argv: list[str]) -> _Completed:
+        path = argv[-1]
+        if path == "repos/acme/widget":
+            return _Completed(0, json.dumps({"default_branch": "develop"}))
+        if path.endswith("/commits/develop"):
+            return _Completed(0, json.dumps({"sha": sha}))
+        return _Completed(
+            1,
+            "",
+            f"HTTP 500 for repos/acme/widget/contents/.github/pr-guard.json?ref={sha}",
+        )
+
+    with pytest.raises(PrGuardLookupError):
+        fetch_trusted_pr_guard(runner, "acme/widget")
+
+
 def test_fetch_trusted_pr_guard_transport_error_is_not_a_missing_file() -> None:
     def runner(argv: list[str]) -> _Completed:
         return _Completed(1, "", "connection reset")

@@ -1344,6 +1344,34 @@ def _require_formal_head_evidence(task: dict[str, Any], head: str, *, when: str)
         raise CoordinatorError(f"formal approve not on current head{when}")
 
 
+def _leave_draft_comment(head: str, *, one_review: bool) -> str:
+    """Ready evidence comment.
+
+    One review is enough only when the pull request opener is listed in
+    one_review_authors in the trusted .github/pr-guard.json on the default
+    branch. A missing file, a missing key, or an empty list keeps two reviews
+    required. An entry that exists only on the pull request head does not count.
+    """
+    if one_review:
+        lead = (
+            f"Ready for review: one review run is approved on `{head[:7]}` "
+            f"and CI green, because this pull request opener is listed in one_review_authors. "
+        )
+    else:
+        lead = (
+            f"Ready for review: two review runs are required and approved on `{head[:7]}` "
+            f"and CI green. "
+        )
+    return (
+        lead
+        + "One review is enough only when the pull request opener is listed in "
+        "one_review_authors in the trusted .github/pr-guard.json on the default branch. "
+        "A missing file, a missing key, or an empty list keeps two reviews required. "
+        "An entry that exists only on the pull request head does not count. "
+        "Still not merge; a human merges."
+    )
+
+
 def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner) -> list[str]:
     c = coord(task)
     target = target_repo(task)
@@ -1439,14 +1467,7 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
     c["phase"] = "leave_draft"
     save_task(store, task)
 
-    body = (
-        f"Ready for review: two review runs are required and approved on `{head[:7]}` "
-        f"and CI green. One review is enough only when the pull request opener is listed in "
-        f"one_review_authors in the trusted .github/pr-guard.json on the default branch. "
-        f"A missing file, a missing key, or an empty list keeps two reviews required. "
-        f"An entry that exists only on the pull request head does not count. "
-        f"Still not merge; a human merges."
-    )
+    body = _leave_draft_comment(head, one_review=bool(skip_codex))
     activity_id = str(uuid5(NAMESPACE_URL, f"coordinator-ready-comment:{task['id']}:{head}"))
     queue_activity(
         store,

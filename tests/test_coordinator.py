@@ -2310,6 +2310,25 @@ def test_formal_approve_skips_codex_pr_when_opener_is_listed(
     )
 
 
+@pytest.mark.no_pg
+def test_leave_draft_comment_names_one_run_only_for_the_exception() -> None:
+    from agent_cli.coordinator_github import _leave_draft_comment
+
+    head = "abcdef0" + ("1" * 33)
+    one = _leave_draft_comment(head, one_review=True)
+    two = _leave_draft_comment(head, one_review=False)
+    assert "one review run is approved" in one
+    assert "two review runs are required and approved" not in one
+    assert "One review is enough only when the pull request opener is listed in one_review_authors" in one
+    assert "A missing file, a missing key, or an empty list keeps two reviews required." in one
+    assert "An entry that exists only on the pull request head does not count." in one
+    assert "two review runs are required and approved" in two
+    assert "and CI green." in two
+    assert "one review run is approved" not in two
+    assert "Still not merge; a human merges." in one
+    assert "Still not merge; a human merges." in two
+
+
 def test_leave_draft_skips_codex_pr_when_opener_is_listed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

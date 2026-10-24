@@ -2681,13 +2681,16 @@ def _sync_approval_comment(
     assessment: Assessment,
     comments: Sequence[Mapping[str, Any]],
     own_id: int,
+    *,
+    delete_only: bool = False,
 ) -> None:
     """Post, update, or remove the extra approval comment.
 
     The welcome comment is independent. This comment exists only while a
     draft still needs a maintainer approval for changed bytes.
+    ``delete_only`` removes a leftover approval comment and never posts one.
     """
-    wanted = build_approval_comment(assessment)
+    wanted = None if delete_only else build_approval_comment(assessment)
     existing = _find_own_marked_comment(comments, own_id, APPROVAL_MARKER)
     if wanted is None:
         if existing is None:
@@ -2890,8 +2893,9 @@ def publish_assessment(
             raise GuardError(f"status create HTTP {status}")
         assessment.writes.append(f"status:create:{context}")
 
-    # Configured exclusions: clear the target-branch status only. Do not look up
-    # or write comments, reports, or approvals, and do not touch another context.
+    # Configured exclusions: clear the target-branch status only. Do not write
+    # the welcome or a new approval comment. Delete a leftover approval comment.
+    # Do not touch another context.
     if assessment.status == "not_applicable":
         if assessment.scope_decision != "exclude":
             raise GuardError(
@@ -2902,6 +2906,11 @@ def publish_assessment(
             "success",
             assessment.description or truncate_desc(NOT_APPLICABLE_DESCRIPTION),
             require_report=False,
+        )
+        own_id, _own_login = api.resolve_own_user()
+        comments = collect_comments(api, assessment.repo, assessment.pr)
+        _sync_approval_comment(
+            api, assessment, comments, own_id, delete_only=True
         )
         return assessment
 

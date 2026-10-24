@@ -2359,8 +2359,7 @@ def load_task_dict(store: Store, tid: str) -> dict:
         }
         for g in ordered_gates
     ]
-    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-    one = payload.get("one_review_author") if isinstance(payload.get("one_review_author"), dict) else {}
+    login, config = _done_one_review(task, checklist)
     return {
         "id": task["id"],
         "session_id": task.get("session_id"),
@@ -2373,8 +2372,8 @@ def load_task_dict(store: Store, tid: str) -> dict:
         },
         "gates": gates,
         "local_checks": local_checks,
-        "pull_opener": one.get("pull_opener") if isinstance(one.get("pull_opener"), str) else "",
-        "trusted_pr_guard": one.get("trusted_pr_guard") if isinstance(one.get("trusted_pr_guard"), dict) else None,
+        "pull_opener": login,
+        "trusted_pr_guard": config,
     }
 
 
@@ -2720,6 +2719,21 @@ def _task_repo_and_pr(task: dict) -> tuple[str, str]:
         ref = str(task.get("ref") or "")
         number = ref if ref.isdigit() else ""
     return repo, str(number or "")
+
+
+def _done_one_review(task: dict, checklist: dict) -> tuple[str, dict | None]:
+    """Live opener and trusted config for a done decision.
+
+    The stored payload copy is not this decision. Both Codex keys must
+    already be ``n_a`` before a live read. A missing pull, a missing file,
+    or a lookup error does not grant the exception.
+    """
+    if checklist.get("codex_pr_quality") != "n_a" or checklist.get("codex_pr_logic") != "n_a":
+        return "", None
+    try:
+        return _live_one_review(task)
+    except PrGuardLookupError:
+        die("trusted review list could not be read")
 
 
 def _live_one_review(task: dict) -> tuple[str, dict | None]:
