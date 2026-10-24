@@ -2687,6 +2687,313 @@ def test_readiness_accepts_approved_codex_pr_when_checklist_not_both_na(
     assert any(f"readiness ok on {fake.head[:7]}" in line for line in lines)
 
 
+_POSTED_HEAD = "c" * 40
+
+
+def _seed_posted_codex_task(store, worker, tid: str, *, codex_dims: tuple[str, ...], codex_status: dict[str, str]) -> dict:
+    """Review task whose Codex checklist is n_a unless a test overrides it."""
+    from agent_cli.allow import CHECKLIST_KEYS
+
+    seed_task(
+        store,
+        worker,
+        tid,
+        {
+            "id": tid,
+            "session_id": "worker-session",
+            "workflow": "review",
+            "title": "Review",
+            "repo": "example/project",
+            "ref": None,
+            "payload": {
+                "coordinator": {
+                    "phase": "pr_gates_codex",
+                    "worktree": str(worker.workspace_root / tid),
+                    "base_sha": "b" * 40,
+                    "head_sha": _POSTED_HEAD,
+                    "source": {
+                        "repo": "example/project",
+                        "number": 7,
+                        "assigned_id": "a-posted",
+                        "publication_repo": "example/project",
+                        "base": "develop",
+                        "title": "Review",
+                    },
+                }
+            },
+            "state": "pr-review",
+            "current_round": 1,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "change_summary_en": "Reviewed.",
+            "change_summary_de": "Geprüft.",
+        },
+    )
+    before = {
+        "session_registered",
+        "contributing_read",
+        "grok_pr_quality",
+        "grok_pr_logic",
+    }
+    for key in CHECKLIST_KEYS["review"]:
+        if key in codex_status:
+            status, evidence = codex_status[key], "second review not posted"
+        elif key in before:
+            status, evidence = "ja", "seed"
+        else:
+            status, evidence = "pending", None
+        cid = f"{tid}-{key}"
+        store.write(
+            "checklist_item",
+            "insert",
+            cid,
+            {
+                "id": cid,
+                "task_id": tid,
+                "key": key,
+                "status": status,
+                "evidence": evidence,
+                "source": "script",
+                "deviation_declared": False,
+                "deviation_granted": False,
+                "granted_by": None,
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+        )
+    for stage, dim, vendor in (
+        ("grok-pr", "quality", "grok"),
+        ("grok-pr", "logic", "grok"),
+    ):
+        gid = f"{tid}-{stage}-{dim}"
+        store.write(
+            "review_gate",
+            "insert",
+            gid,
+            {
+                "id": gid,
+                "task_id": tid,
+                "stage": stage,
+                "dimension": dim,
+                "vendor": vendor,
+                "verdict": "approved",
+                "evidence": None,
+                "head_sha": _POSTED_HEAD,
+                "agent_id": f"{tid}-agent-{dim}",
+                "recorded_at": "2026-01-01T00:00:00Z",
+            },
+        )
+    for dim in codex_dims:
+        gid = f"{tid}-codex-pr-{dim}"
+        store.write(
+            "review_gate",
+            "insert",
+            gid,
+            {
+                "id": gid,
+                "task_id": tid,
+                "stage": "codex-pr",
+                "dimension": dim,
+                "vendor": "codex",
+                "verdict": "approved",
+                "evidence": None,
+                "head_sha": _POSTED_HEAD,
+                "agent_id": f"{tid}-codex-{dim}",
+                "recorded_at": "2026-01-01T00:00:01Z",
+            },
+        )
+    task = store.row("task", tid)
+    assert task is not None
+    return task
+
+
+def _checklist_status(store, tid: str) -> dict[str, str]:
+    return {
+        str(row.get("key")): str(row.get("status"))
+        for row in store.rows("checklist_item")
+        if row.get("task_id") == tid
+    }
+
+
+def _patch_pr_gate_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fake_diff(store, worker, task, runner, *, head):  # noqa: ANN001
+        path = tmp_path / f"review-{head[:12]}.patch"
+        path.write_text("diff\n", encoding="utf-8")
+        path.with_suffix(".excerpt.txt").write_text("excerpt\n", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(
+        "agent_cli.coordinator_lanes.verify_checkout_identity",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "agent_cli.coordinator_lanes.verify_signed_clean_head",
+        lambda *args, **kwargs: _POSTED_HEAD,
+    )
+    monkeypatch.setattr("agent_cli.coordinator_lanes.write_review_diff", fake_diff)
+    monkeypatch.setattr(
+        "agent_cli.coordinator_lanes.write_review_context",
+        lambda *args, **kwargs: "",
+    )
+
+
+def test_approved_codex_stage_replaces_n_a_on_a_later_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both gates already approved still write ja and do not start another lane."""
+    from agent_cli.coordinator_lanes import phase_pr_gates
+
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    tid = "aa000001-0000-4000-8000-000000000054"
+    task = _seed_posted_codex_task(
+        store,
+        worker,
+        tid,
+        codex_dims=("quality", "logic"),
+        codex_status={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+    )
+    _patch_pr_gate_git(monkeypatch, tmp_path)
+    launched: list[str] = []
+
+    def run(argv, stdin=None):  # noqa: ANN001
+        launched.append("lane")
+        return Completed(0, "STATUS: complete\nRESULT: approved\n", "")
+
+    lines = phase_pr_gates(
+        store, worker, task, lambda argv: Completed(0, "", ""), run, vendor="codex", stage="codex-pr"
+    )
+    assert launched == []
+    assert any("already complete" in line for line in lines)
+    status = _checklist_status(store, tid)
+    assert status["codex_pr_quality"] == "ja"
+    assert status["codex_pr_logic"] == "ja"
+    saved = store.row("task", tid)
+    assert saved["payload"]["coordinator"]["phase"] == "ci"
+    assert saved["payload"]["coordinator"].get("phase") != "blocked"
+
+
+def test_cached_codex_dimension_replaces_n_a_while_the_other_lane_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An approved dimension cached on retry still moves n_a to ja. The other lane starts."""
+    from agent_cli.coordinator_lanes import phase_pr_gates
+
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    tid = "aa000001-0000-4000-8000-000000000055"
+    task = _seed_posted_codex_task(
+        store,
+        worker,
+        tid,
+        codex_dims=("quality",),
+        codex_status={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+    )
+    _patch_pr_gate_git(monkeypatch, tmp_path)
+    launched: list[str] = []
+
+    def run(argv, stdin=None):  # noqa: ANN001
+        text = " ".join(str(part) for part in argv) + "\n" + (stdin or "")
+        for name in ("pr-reviewer-quality", "pr-reviewer-logic"):
+            if name in text:
+                launched.append(name)
+                break
+        return Completed(0, "STATUS: complete\nRESULT: approved\n", "")
+
+    lines = phase_pr_gates(
+        store, worker, task, lambda argv: Completed(0, "", ""), run, vendor="codex", stage="codex-pr"
+    )
+    assert launched == ["pr-reviewer-logic"]
+    assert any("cached" in line for line in lines)
+    assert any("logic=approved" in line for line in lines)
+    status = _checklist_status(store, tid)
+    assert status["codex_pr_quality"] == "ja"
+    assert status["codex_pr_logic"] == "ja"
+    saved = store.row("task", tid)
+    assert saved["payload"]["coordinator"]["phase"] == "ci"
+
+
+def test_codex_lanes_still_start_when_the_checklist_is_n_a(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one-review checklist does not skip the Codex lane."""
+    from agent_cli.coordinator_lanes import phase_pr_gates
+
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    tid = "aa000001-0000-4000-8000-000000000056"
+    task = _seed_posted_codex_task(
+        store,
+        worker,
+        tid,
+        codex_dims=(),
+        codex_status={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+    )
+    _patch_pr_gate_git(monkeypatch, tmp_path)
+    launched: list[str] = []
+
+    def run(argv, stdin=None):  # noqa: ANN001
+        text = " ".join(str(part) for part in argv) + "\n" + (stdin or "")
+        for name in ("pr-reviewer-quality", "pr-reviewer-logic"):
+            if name in text:
+                launched.append(name)
+                break
+        return Completed(0, "STATUS: complete\nRESULT: approved\n", "")
+
+    phase_pr_gates(
+        store, worker, task, lambda argv: Completed(0, "", ""), run, vendor="codex", stage="codex-pr"
+    )
+    assert set(launched) == {"pr-reviewer-quality", "pr-reviewer-logic"}
+    status = _checklist_status(store, tid)
+    assert status["codex_pr_quality"] == "ja"
+    assert status["codex_pr_logic"] == "ja"
+
+
+def test_approved_retry_does_not_promote_a_pending_codex_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only n_a is replaced. A pending key does not turn the early return into a block."""
+    from agent_cli.coordinator_lanes import phase_pr_gates
+
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    tid = "aa000001-0000-4000-8000-000000000057"
+    task = _seed_posted_codex_task(
+        store,
+        worker,
+        tid,
+        codex_dims=("quality", "logic"),
+        codex_status={"codex_pr_quality": "pending", "codex_pr_logic": "n_a"},
+    )
+    _patch_pr_gate_git(monkeypatch, tmp_path)
+    lines = phase_pr_gates(
+        store,
+        worker,
+        task,
+        lambda argv: Completed(0, "", ""),
+        None,
+        vendor="codex",
+        stage="codex-pr",
+    )
+    assert any("already complete" in line for line in lines)
+    status = _checklist_status(store, tid)
+    assert status["codex_pr_quality"] == "pending"
+    assert status["codex_pr_logic"] == "ja"
+    saved = store.row("task", tid)
+    assert saved["payload"]["coordinator"]["phase"] == "ci"
+
+
 def test_pr_review_scope_keeps_the_compliance_reminder_and_states_a_missing_issue_is_not_a_defect() -> None:
     from agent_cli.a38_review import COMPLIANCE_PROMPT
     from agent_cli.coordinator_lanes import _pr_review_scope

@@ -299,8 +299,16 @@ def close_allowed(
     want = required_source(step)
     if source != want:
         return CloseVerdict(False, f"{key} requires --source {want} (got {source})", step)
+    # A posted Codex review replaces n_a with ja. n_a already satisfied the
+    # chain, so the key is not a next step. The lane still starts. After ja,
+    # both Codex gates are required again. n_a alone does not grant them.
+    promote_codex = (
+        status == "ja"
+        and key in CODEX_SECOND_REVIEW_KEYS
+        and checklist.get(key) == "n_a"
+    )
     ready = next_steps(workflow, checklist, spine_only=False)
-    if step not in ready:
+    if step not in ready and not promote_codex:
         pending = ",".join(s.key for s in next_steps(workflow, checklist, spine_only=True)) or "-"
         return CloseVerdict(
             False,

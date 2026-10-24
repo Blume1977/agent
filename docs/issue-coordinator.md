@@ -199,7 +199,15 @@ for worker in workers.values():
    `pr_gates_codex` and a pinned `question_activity_id` — not a rejected
    complete gate and not an implementer fix loop. Rejections publish
    `review.post` **COMMENT** (not `REQUEST_CHANGES`) and invalidate
-   head-specific evidence.
+   head-specific evidence. A successful Codex lane still starts when the
+   checklist keys are `n_a`. It replaces `n_a` with `ja` for
+   `codex_pr_quality` and `codex_pr_logic`, including on a later tick whose
+   gate is already approved. After `ja`, both Codex gates are required again.
+   `n_a` alone does not grant Ready or done. One review is enough only when
+   the pull request opener is listed in one_review_authors in the trusted
+   .github/pr-guard.json on the default branch. A missing file, a missing
+   key, or an empty list keeps two reviews required. An entry that exists
+   only on the pull request head does not count.
 8. **CI**: exact-head PR check rollup **and** paginated head workflow inventory
    (path+event+attempt), classified by one shared observer used by both
    ordinary `phase_ci` and Ready-side fresh rechecks. Only `success` counts.
