@@ -2464,6 +2464,64 @@ class A38PrGuardConfigScopeTests(unittest.TestCase):
         self.assertIn(GUARD_MARKER, fake.comments[0]["body"])
         self.assertNotIn(a38_guard.APPROVAL_MARKER, fake.comments[0]["body"])
 
+    def test_excluded_draft_deletes_a_legacy_welcome_marker_approval_comment(self) -> None:
+        fake = FakeAPI()
+        fake.pull = fake._pull(HEAD, BASE, draft=True)
+        self._release_pull(fake)
+        del fake.files[(BASE, ".github/a38.json")]
+        welcome = {
+            "id": 41,
+            "body": f"{GUARD_MARKER}\n\nEN:\nDraft instructions\nThanks.\n\nDE:\nEntwurf-Hinweise\nDanke.\n",
+            "user": {"id": BOT_ID, "login": "github-actions[bot]"},
+            "updated_at": "2026-09-05T11:00:00Z",
+            "created_at": "2026-09-05T11:00:00Z",
+        }
+        legacy = {
+            "id": 43,
+            "body": (
+                f"{GUARD_MARKER}\n\n"
+                "EN:\n"
+                "Approval required\n"
+                "This pull request needs an approval on the current head.\n\n"
+                "DE:\n"
+                "Freigabe nötig\n"
+                "Dieser Pull Request braucht eine Freigabe.\n"
+            ),
+            "user": {"id": BOT_ID, "login": "github-actions[bot]"},
+            "updated_at": "2026-09-05T11:00:01Z",
+            "created_at": "2026-09-05T11:00:01Z",
+        }
+        human = {
+            "id": 44,
+            "body": legacy["body"],
+            "user": {"id": AUTHOR_ID, "login": "author"},
+            "updated_at": "2026-09-05T11:00:02Z",
+            "created_at": "2026-09-05T11:00:02Z",
+        }
+        status = {
+            "id": 45,
+            "body": f"{GUARD_MARKER}\nEN:\nA38 pass\nThanks for your contribution!\n\nDE:\nA38 bestanden\nDanke!\n",
+            "user": {"id": BOT_ID, "login": "github-actions[bot]"},
+            "updated_at": "2026-09-05T11:00:03Z",
+            "created_at": "2026-09-05T11:00:03Z",
+        }
+        mixed = {
+            "id": 46,
+            "body": (
+                f"{GUARD_MARKER}\n\nEN:\nDraft instructions\n"
+                "Approval required\n\nDE:\nFreigabe nötig\n"
+            ),
+            "user": {"id": BOT_ID, "login": "github-actions[bot]"},
+            "updated_at": "2026-09-05T11:00:04Z",
+            "created_at": "2026-09-05T11:00:04Z",
+        }
+        fake.comments.extend([welcome, legacy, human, status, mixed])
+        result = reconcile_pull(fake.api(), REPO, 1, publish=True)
+        self.assertEqual(result.status, "not_applicable")
+        self.assertIn("comment:approval:delete:43", result.writes)
+        self.assertFalse(any(item.startswith("comment:approval:create:") for item in result.writes))
+        self.assertEqual([comment["id"] for comment in fake.comments], [41, 44, 45, 46])
+
     def test_invalidate_status_skips_drafts(self) -> None:
         fake = FakeAPI()
         snap = fetch_pull(fake.api(), REPO, 1)

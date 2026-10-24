@@ -2678,6 +2678,23 @@ def _find_own_guard_comment(
     return _find_own_marked_comment(comments, own_id, GUARD_MARKER)
 
 
+def _legacy_approval_comment(body: object) -> bool:
+    """Previous guard posted approval under the welcome marker.
+
+    The structured titles are the lines after ``EN:`` and ``DE:``. A Draft
+    instructions comment is not this comment, even if later text mentions
+    approval.
+    """
+    if not isinstance(body, str) or GUARD_MARKER not in body:
+        return False
+    if "\nEN:\nDraft instructions\n" in body:
+        return False
+    return (
+        "\nEN:\nApproval required\n" in body
+        and "\nDE:\nFreigabe nötig\n" in body
+    )
+
+
 def _sync_approval_comment(
     api: GitHubApi,
     assessment: Assessment,
@@ -2692,23 +2709,42 @@ def _sync_approval_comment(
     bytes still need a maintainer approval, including when the pull request
     is Ready. It is removed when that approval is no longer required.
     ``delete_only`` removes a leftover approval comment and never posts one.
+    That includes a previous-guard comment that still uses the welcome marker
+    with the titles Approval required and Freigabe nötig. A Draft instructions
+    comment stays.
     """
     wanted = None if delete_only else build_approval_comment(assessment)
     existing = _find_own_marked_comment(comments, own_id, APPROVAL_MARKER)
     if wanted is None:
-        if existing is None:
+        targets: list[int] = []
+        if existing is not None and isinstance(existing.get("id"), int):
+            targets.append(existing["id"])
+        # Only the exclusion path deletes the old welcome-marker approval.
+        # The normal path may already have replaced that same comment with
+        # the current welcome, while this list still holds the previous body.
+        if delete_only:
+            for comment in comments:
+                user = comment.get("user") or {}
+                if not isinstance(user, Mapping) or user.get("id") != own_id:
+                    continue
+                if not _legacy_approval_comment(comment.get("body")):
+                    continue
+                cid = comment.get("id")
+                if isinstance(cid, int) and cid not in targets:
+                    targets.append(cid)
+        if not targets:
             return
-        cid = existing["id"]
-        status, _data, _ = api.request(
-            "DELETE",
-            f"/repos/{assessment.repo}/issues/comments/{cid}",
-            retry=False,
-        )
-        if status in {401, 403}:
-            raise GuardError(f"GitHub API denied ({status}) deleting approval comment")
-        if status not in {200, 204}:
-            raise GuardError(f"approval comment delete HTTP {status}")
-        assessment.writes.append(f"comment:approval:delete:{cid}")
+        for cid in targets:
+            status, _data, _ = api.request(
+                "DELETE",
+                f"/repos/{assessment.repo}/issues/comments/{cid}",
+                retry=False,
+            )
+            if status in {401, 403}:
+                raise GuardError(f"GitHub API denied ({status}) deleting approval comment")
+            if status not in {200, 204}:
+                raise GuardError(f"approval comment delete HTTP {status}")
+            assessment.writes.append(f"comment:approval:delete:{cid}")
         return
     if existing is not None and existing.get("body") == wanted:
         assessment.writes.append("comment:approval:unchanged")
@@ -2897,7 +2933,9 @@ def publish_assessment(
         assessment.writes.append(f"status:create:{context}")
 
     # Configured exclusions: clear the target-branch status only. Do not write
-    # the welcome or a new approval comment. Delete a leftover approval comment.
+    # the welcome or a new approval comment. Delete a leftover approval comment,
+    # including a previous one under the welcome marker whose titles are
+    # Approval required and Freigabe nötig. Do not delete Draft instructions.
     # Do not touch another context.
     if assessment.status == "not_applicable":
         if assessment.scope_decision != "exclude":

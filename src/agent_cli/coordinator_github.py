@@ -1392,6 +1392,26 @@ def _leave_draft_comment(head: str, *, one_review: bool) -> str:
     )
 
 
+def _revoked_exception_comment(head: str) -> str:
+    """Correction when the one-review exception disappears before Ready.
+
+    One review is enough only when the pull request opener is listed in
+    one_review_authors in the trusted .github/pr-guard.json on the default
+    branch. A missing file, a missing key, or an empty list keeps two reviews
+    required. An entry that exists only on the pull request head does not count.
+    """
+    return (
+        f"Ready was not set on `{head[:7]}`. "
+        "The one-review exception was no longer present when leave-draft was about to "
+        "mark the pull request ready. Two review runs are required. "
+        "One review is enough only when the pull request opener is listed in "
+        "one_review_authors in the trusted .github/pr-guard.json on the default branch. "
+        "A missing file, a missing key, or an empty list keeps two reviews required. "
+        "An entry that exists only on the pull request head does not count. "
+        "Still not merge; a human merges."
+    )
+
+
 def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner) -> list[str]:
     c = coord(task)
     target = target_repo(task)
@@ -1487,8 +1507,14 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
     c["phase"] = "leave_draft"
     save_task(store, task)
 
-    body = _leave_draft_comment(head, one_review=bool(skip_codex))
-    activity_id = str(uuid5(NAMESPACE_URL, f"coordinator-ready-comment:{task['id']}:{head}"))
+    one_review = bool(skip_codex)
+    body = _leave_draft_comment(head, one_review=one_review)
+    # The decision is part of the id. A later pass that no longer has the
+    # exception posts its own two-review comment instead of reusing this one.
+    decision = "one" if one_review else "two"
+    activity_id = str(
+        uuid5(NAMESPACE_URL, f"coordinator-ready-comment:{task['id']}:{head}:{decision}")
+    )
     queue_activity(
         store,
         activity_id=activity_id,
@@ -1509,6 +1535,35 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
         c["phase"] = "leave_draft"
         save_task(store, task)
         return [retry_after_comment]
+    # The evidence comment is an external call. Re-read the trusted list before
+    # Ready. One review is enough only while the opener is still listed.
+    if skip_codex:
+        again = _codex_skip(store, worker, task, runner, phase="leave_draft", head=head)
+        if isinstance(again, list):
+            return again
+        if not again:
+            withdrawn_id = str(
+                uuid5(NAMESPACE_URL, f"coordinator-ready-withdrawn:{task['id']}:{head}")
+            )
+            queue_activity(
+                store,
+                activity_id=withdrawn_id,
+                session_id=worker.session_id,
+                typ="comment.post",
+                payload={
+                    "repo": target,
+                    "number": number,
+                    "body": _revoked_exception_comment(head),
+                    "target": "pr",
+                },
+            )
+            execute_github(store, runner, activity_ids=(withdrawn_id,))
+            withdrawn = store.row("activity", withdrawn_id)
+            if withdrawn is None or withdrawn.get("execution_status") != "done":
+                raise CoordinatorError("revoked one-review comment not verified")
+            raise CoordinatorError(
+                "one-review exception revoked before leave-draft; two reviews are required"
+            )
     ready = scoped_runner(["gh", "pr", "ready", str(number), "--repo", target])
     if ready.returncode != 0:
         raise CoordinatorError(redact(ready.stderr or ready.stdout or "gh pr ready failed"))

@@ -260,7 +260,16 @@ for worker in workers.values():
    counted as approval. The resumed post-dismissal attempt uses a new durable
    activity occurrence (same attempt stays crash-idempotent; a dismissed
    same-marker APPROVE fails closed in `review.post` and cannot be marked
-   done). One evidence comment (must complete with `execution_status=done`),
+   done). One evidence comment (must complete with `execution_status=done`).
+   When that comment relied on the one-review exception, leave-draft reads the
+   trusted list again before Ready. A transport failure retries and does not
+   set Ready. If the opener is no longer listed, it posts a new comment that
+   Ready was not set and does not call `gh pr ready`. A later leave-draft that
+   has both review gates posts its own evidence comment. One review is enough
+   only when the pull request opener is listed in one_review_authors in the
+   trusted .github/pr-guard.json on the default branch. A missing file, a
+   missing key, or an empty list keeps two reviews required. An entry that
+   exists only on the pull request head does not count.
    `allow pr-ready`, then leave draft and verify `isDraft=false`. **Never merge.**
 10. **Complete** only after a verified **human** merge: GitHub merge actor type
     must be exactly `User` (missing type is not human; Bot is refused). Also

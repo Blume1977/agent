@@ -202,6 +202,8 @@ class FakeGh:
         self.staged = False
         self.commit_count = 0
         self.pr_guard_body: str | None = None
+        self.revoke_one_review_on_pr_comment = False
+        self.ready_calls = 0
 
     def __call__(self, argv: list[str]) -> Completed:
         if argv and argv[0] == "env":
@@ -329,9 +331,19 @@ class FakeGh:
             cid = 100 + len(self.pr_comments)
             self.pr_comments.append({"id": cid, "body": body, "user": {"login": "worker-bot"},
                                      "html_url": f"https://github.com/example/project/pull/42#issuecomment-{cid}"})
+            if self.revoke_one_review_on_pr_comment:
+                self.pr_guard_body = json.dumps(
+                    {
+                        "schema": "pr-guard/v1",
+                        "a38": {"enforce": [], "exclude": [], "default": "enforce"},
+                        "one_review_authors": [],
+                    }
+                )
+                self.revoke_one_review_on_pr_comment = False
             return Completed(0, self.pr_comments[-1]["html_url"], "")
 
         if argv[:3] == ["gh", "pr", "ready"]:
+            self.ready_calls += 1
             self.pr["isDraft"] = False
             return Completed(0, "", "")
 

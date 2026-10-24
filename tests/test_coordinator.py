@@ -2534,6 +2534,65 @@ def test_leave_draft_skips_codex_pr_when_opener_is_listed(
     lines = phase_leave_draft(store, worker, task, fake)
     assert not any("missing approved gate codex-pr/" in line for line in lines)
     assert any("left draft" in line for line in lines)
+    assert fake.ready_calls == 1
+
+
+def test_leave_draft_does_not_ready_when_the_exception_is_revoked_after_the_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _ready_side_env(tmp_path, monkeypatch, patch_github=True)
+    _list_opener(fake)
+    fake.revoke_one_review_on_pr_comment = True
+    from agent_cli import coordinator_github
+
+    marked = coordinator_github.execute_github
+
+    def deliver_then_mark(store, runner, *, activity_ids):  # noqa: ANN001
+        for aid in activity_ids:
+            row = store.row("activity", aid) or {}
+            if row.get("type") != "comment.post" or row.get("execution_status") != "pending":
+                continue
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            fake(
+                [
+                    "gh",
+                    "pr",
+                    "comment",
+                    str(payload.get("number") or 42),
+                    "--repo",
+                    str(payload.get("repo") or "example/project"),
+                    "--body",
+                    str(payload.get("body") or ""),
+                ]
+            )
+        return marked(store, runner, activity_ids=activity_ids)
+
+    monkeypatch.setattr(coordinator_github, "execute_github", deliver_then_mark)
+    tid = "aa000001-0000-4000-8000-000000000052"
+    task = _seed_ready_side_task(
+        store,
+        worker,
+        fake,
+        tid=tid,
+        phase="leave_draft",
+        checklist_codex={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        seed_formal_review=True,
+        extra_evidence={
+            "formal_head": fake.head,
+            "readiness_head": fake.head,
+        },
+    )
+    with pytest.raises(
+        CoordinatorError,
+        match="one-review exception revoked before leave-draft",
+    ):
+        phase_leave_draft(store, worker, task, fake)
+    assert fake.ready_calls == 0
+    assert fake.pr["isDraft"] is True
+    bodies = "\n".join(str(comment.get("body") or "") for comment in fake.pr_comments)
+    assert "one review run is approved" in bodies
+    assert "The one-review exception was no longer present" in bodies
+    assert "Two review runs are required." in bodies
 
 
 def test_readiness_accepts_approved_codex_pr_when_checklist_not_both_na(
