@@ -1472,6 +1472,8 @@ def second_run_status(
     guard_user_id: int,
     committed_at: str,
     head: str,
+    markdown_only: bool,
+    rules_bound: bool,
     covered_at: Mapping[str, str] | None = None,
     ancestry_unavailable: Collection[str] | None = None,
 ) -> str:
@@ -1481,14 +1483,18 @@ def second_run_status(
     A v1 second run with ``defects`` 0 and no flag is ``clear``. The visible
     sentence must be the one that flag requires, and a pass run must name one
     shared non-empty model in both titles. The guard does not judge that name.
-    A comment that does not parse, whose sentence does not match the flag,
-    whose pass-run titles do not name that model, or whose flag is not a
-    boolean paired with a counted defect, is skipped. ``absent`` is no
-    well-formed second run. Under the standard that absence fails Ready.
-    One review is enough only when the opener is listed in one_review_authors
-    on the trusted default-branch file. A missing file, a missing key, or an
-    empty list keeps that failure. An entry only on the pull request head
-    does not count.
+    The comment must also pass the same declaration and human-record checks
+    as the first run, including the prompt. A comment that does not parse,
+    whose declaration or record is invalid, whose prompt or record is missing,
+    whose sentence does not match the flag, whose pass-run titles do not name
+    that model, or whose flag is not a boolean paired with a counted defect,
+    is skipped. A declared head that is not this pull request and not an
+    ancestor the caller already proved is skipped before those checks.
+    ``absent`` is no well-formed second run. Under the standard that absence
+    fails Ready. One review is enough only when the opener is listed in
+    one_review_authors on the trusted default-branch file. A missing file,
+    a missing key, or an empty list keeps that failure. An entry only on
+    the pull request head does not count.
     This does not choose the first-run completion comment.
     """
     committed = _utc(committed_at)
@@ -1519,9 +1525,16 @@ def second_run_status(
         signal = _second_run_merge_signal(payload)
         if signal is None:
             continue
-        # The sentence and the flag are one fact. A mismatch is not a signal.
-        passes = payload.get("passes")
-        if not _is_int(passes) or validate_visible(text, passes):
+        # Same declaration and record as the first run. A missing prompt
+        # or a missing human record is not a signal. The sentence check
+        # lives in that declaration.
+        if _declaration_reasons(
+            text,
+            head=head,
+            markdown_only=markdown_only,
+            rules_bound=rules_bound,
+            covered_heads=None if covered_at is None else covered_at.keys(),
+        ):
             continue
         return "blocking" if signal else "clear"
     return "absent"
@@ -1534,6 +1547,8 @@ def newest_second_run_blocks_merge(
     guard_user_id: int,
     committed_at: str,
     head: str,
+    markdown_only: bool,
+    rules_bound: bool,
     covered_at: Mapping[str, str] | None = None,
     ancestry_unavailable: Collection[str] | None = None,
 ) -> bool:
@@ -1545,6 +1560,8 @@ def newest_second_run_blocks_merge(
             guard_user_id=guard_user_id,
             committed_at=committed_at,
             head=head,
+            markdown_only=markdown_only,
+            rules_bound=rules_bound,
             covered_at=covered_at,
             ancestry_unavailable=ancestry_unavailable,
         )
@@ -2009,6 +2026,8 @@ def evaluate_review_gate(
                 guard_user_id=guard_id,
                 committed_at=committed_at,
                 head=head,
+                markdown_only=markdown_only,
+                rules_bound=rules_bound,
                 covered_at=covered,
                 ancestry_unavailable=unread,
             )

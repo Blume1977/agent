@@ -19,6 +19,7 @@ from agent_cli.a38_review import (
     parse_review_block,
     render_review_record,
     review_rules_bound,
+    second_run_status,
     select_review_comment,
     evaluate_review_gate,
     unresolved_thread_reasons,
@@ -1960,6 +1961,75 @@ def test_gate_drafts_when_the_second_run_blocks_the_merge() -> None:
     ok, reasons = _gate(_gate_api(), [_first_run_comment(), second])
     assert ok is False
     assert reasons == [BLOCKING_REVIEW_REASON]
+
+
+def test_gate_a_second_run_without_the_prompt_is_not_a_signal() -> None:
+    payload = _v2_second(blocks_merge=False, defects=0)
+    body = _body(payload, passes=1)
+    stripped = body.replace("```text\n" + _RECORD_PROMPT + "\n```\n", "")
+    assert stripped != body
+    assert validate_visible(stripped, 1) == []
+    assert validate_review_record(stripped, payload) != []
+    comment = _comment(stripped, cid=2, user=10, created="2026-09-03T00:00:00Z")
+    status = second_run_status(
+        [_first_run_comment(), comment],
+        author_id=10,
+        guard_user_id=99,
+        committed_at="2026-09-01T00:00:00Z",
+        head=HEAD,
+        markdown_only=False,
+        rules_bound=True,
+        covered_at={HEAD: "2026-09-01T00:00:00Z"},
+    )
+    assert status == "absent"
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), comment])
+    assert ok is False
+    assert reasons == [SECOND_REVIEW_MISSING]
+
+
+def test_second_run_prompt_without_the_rules_sentence_needs_review_md() -> None:
+    payload = _v2_second(blocks_merge=False, defects=0)
+    shaped = "Review the complete pull request diff and leave the tree unchanged."
+    for lane in payload["lanes"]:
+        lane["prompt"] = shaped
+    record = render_review_record(payload, rules_bound=False)
+    body = (
+        "EN:\n"
+        f"Second review with {_RECORD_MODEL}\n"
+        "No defects.\n\n"
+        "DE:\n"
+        f"Zweiter Review mit {_RECORD_MODEL}\n"
+        "Keine Mängel.\n\n"
+        "<details>\n<summary>Details</summary>\n\n"
+        + record
+        + f"{REVIEW_BEGIN}\n```json\n"
+        + json.dumps(payload)
+        + f"\n```\n{REVIEW_END}\n"
+    )
+    assert COMPLIANCE_PROMPT not in body
+    parsed = parse_review_block(body)
+    assert validate_review_record(body, parsed, rules_bound=False) == []
+    assert validate_review_record(body, parsed, rules_bound=True) != []
+    comment = _comment(body, cid=2, user=10, created="2026-09-03T00:00:00Z")
+    common = dict(
+        author_id=10,
+        guard_user_id=99,
+        committed_at="2026-09-01T00:00:00Z",
+        head=HEAD,
+        markdown_only=False,
+        covered_at={HEAD: "2026-09-01T00:00:00Z"},
+    )
+    assert second_run_status([comment], rules_bound=False, **common) == "clear"
+    assert second_run_status([comment], rules_bound=True, **common) == "absent"
+
+
+def test_wrong_head_second_run_does_not_block() -> None:
+    payload = _v2_second(blocks_merge=True, defects=1)
+    payload["head"] = OTHER
+    comment = _second_run_comment(payload, cid=2, created="2026-09-03T00:00:00Z")
+    ok, reasons = _gate(_gate_api(), [_first_run_comment(), comment])
+    assert BLOCKING_REVIEW_REASON not in reasons
+    assert reasons == [SECOND_REVIEW_MISSING]
 
 
 def test_gate_keeps_ready_when_second_run_defects_do_not_block() -> None:

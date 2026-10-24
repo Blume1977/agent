@@ -1603,8 +1603,8 @@ def build_approval_comment(assessment: Assessment) -> str | None:
     """Separate draft comment when changed bytes still need approval.
 
     The welcome comment stays. This one is absent when nothing needs that
-    approval. A docs-waiver draft keeps its own comment and does not get
-    this extra posting.
+    approval. A docs-waiver draft keeps the welcome and does not get this
+    extra posting.
     """
     if not assessment.draft or _draft_docs_waiver_pass(assessment):
         return None
@@ -1648,7 +1648,9 @@ def build_approval_comment(assessment: Assessment) -> str | None:
 
 
 def build_comment_body(assessment: Assessment) -> str:
-    if assessment.draft and not _draft_docs_waiver_pass(assessment):
+    # Every open draft gets the short greeting, including a docs waiver.
+    # The waiver comment is only for a pull request that is not a draft.
+    if assessment.draft:
         url = _steps_url(assessment.standard_url)
         return (
             f"{GUARD_MARKER}\n\n"

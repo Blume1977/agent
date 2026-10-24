@@ -2845,8 +2845,10 @@ class A38PrGuardConfigScopeTests(unittest.TestCase):
             matching[0].get("description"),
             "pass: markdown-only change set; A38 report not required",
         )
-        self.assertIn("optional for this markdown-only waiver", result.comment_body)
-        self.assertIn(
+        self.assertIn("Draft instructions", result.comment_body)
+        self.assertIn("Thanks for your contribution", result.comment_body)
+        self.assertNotIn("optional for this markdown-only waiver", result.comment_body)
+        self.assertNotIn(
             "author local-CI report not required because every changed "
             "path is a markdown file",
             result.comment_body,
@@ -3239,8 +3241,10 @@ class A38PrGuardConfigScopeTests(unittest.TestCase):
             matching[0].get("description"),
             "pass: guard-docs change set; A38 report not required",
         )
-        self.assertIn("optional for this guard-docs waiver", result.comment_body)
-        self.assertIn(
+        self.assertIn("Draft instructions", result.comment_body)
+        self.assertIn("Thanks for your contribution", result.comment_body)
+        self.assertNotIn("optional for this guard-docs waiver", result.comment_body)
+        self.assertNotIn(
             "author local-CI report not required because the change set is "
             "markdown files and/or .github/workflows/a38-guard.yml.",
             result.comment_body,
