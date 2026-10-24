@@ -28,6 +28,7 @@ from .allow import (
     GATE_UNAVAILABLE_KEYS,
     SECOND_REVIEW_NOT_POSTED,
     TERMINAL_STATES,
+    both_codex_reviews_na,
     codex_second_review_na,
     evaluate_allow,
     ready_for_done_blocking,
@@ -2326,10 +2327,11 @@ def load_task_dict(store: Store, tid: str) -> dict:
     task = store.row("task", tid)
     if task is None:
         die(f"unknown task: {tid}")
-    checklist = {
-        str(r["key"]): str(r["status"])
-        for r in store.rows("checklist_item")
-        if r.get("task_id") == tid
+    checklist_rows = [r for r in store.rows("checklist_item") if r.get("task_id") == tid]
+    checklist = {str(r["key"]): str(r["status"]) for r in checklist_rows}
+    checklist_evidence = {
+        str(r["key"]): r.get("evidence") if isinstance(r.get("evidence"), str) else ""
+        for r in checklist_rows
     }
     checks = [c for c in store.rows("local_check") if c.get("task_id") == tid]
     ordered_checks = list(reversed(checks))
@@ -2365,6 +2367,7 @@ def load_task_dict(store: Store, tid: str) -> dict:
         "workflow": task.get("workflow"),
         "state": task.get("state"),
         "checklist": checklist,
+        "checklist_evidence": checklist_evidence,
         "summaries": {
             "en": task.get("change_summary_en") or "",
             "de": task.get("change_summary_de") or "",
@@ -2556,12 +2559,15 @@ def cmd_allow(args: list[str]) -> None:
             )
         elif action == "claim-done":
             # Same done predicate as task-done. Read the trusted list live
-            # only when both second-review keys are already n_a.
+            # only for an open task whose both second-review keys are already
+            # n_a with evidence exactly "second review not posted".
             if session_id:
                 session = _need(store, "session", session_id)
                 _require_skill(session, "spine")
                 session_tasks = load_session_tasks(store, session_id)
                 for snap in session_tasks:
+                    if str(snap.get("state") or "") in TERMINAL_STATES:
+                        continue
                     _attach_live_one_review(store, snap)
             result = evaluate_allow(
                 action,
@@ -2742,32 +2748,43 @@ def _task_repo_and_pr(task: dict) -> tuple[str, str]:
 def _attach_live_one_review(
     store: Store, snap: dict, row: dict | None = None
 ) -> None:
-    """Copy the live exception onto one done snapshot.
+    """Copy the live exception onto one open done snapshot.
 
     ``load_task_dict`` leaves the opener empty and the trusted config unset.
-    GitHub is read only when both Codex keys are already ``n_a``. A lookup
-    error stops the command and does not grant the exception. The stored
-    payload copy is not read. ``pr-ready`` does not call this.
+    GitHub is read only for an open task whose both Codex keys are already
+    ``n_a`` with evidence exactly ``second review not posted``. A terminal
+    task is not read. A lookup error stops the command and does not grant
+    the exception. The stored payload copy is not read. ``pr-ready`` does
+    not call this.
     """
+    if str(snap.get("state") or "") in TERMINAL_STATES:
+        return
     if row is None:
         row = store.row("task", str(snap.get("id") or ""))
     if row is None:
         return
-    login, config = _done_one_review(row, snap.get("checklist") or {})
+    login, config = _done_one_review(
+        row,
+        snap.get("checklist") or {},
+        snap.get("checklist_evidence") or {},
+    )
     snap["pull_opener"] = login
     snap["trusted_pr_guard"] = config
 
 
-def _done_one_review(task: dict, checklist: dict) -> tuple[str, dict | None]:
+def _done_one_review(
+    task: dict, checklist: dict, evidence: dict | None = None
+) -> tuple[str, dict | None]:
     """Live opener and trusted config for a done decision.
 
     Callers are task state done, ``allow task-done``, and ``allow claim-done``.
     ``load_task_dict`` stays local and does not call this. The stored payload
-    copy is not this decision. Both Codex keys must already be ``n_a`` before
-    a live read. A missing pull, a missing file, or a lookup error does not
-    grant the exception.
+    copy is not this decision. Both Codex keys must already be ``n_a`` with
+    evidence exactly ``second review not posted`` before a live read. Any
+    other evidence stays local. A missing pull, a missing file, or a lookup
+    error does not grant the exception.
     """
-    if checklist.get("codex_pr_quality") != "n_a" or checklist.get("codex_pr_logic") != "n_a":
+    if not both_codex_reviews_na(checklist, evidence):
         return "", None
     try:
         return _live_one_review(task)

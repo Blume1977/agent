@@ -53,9 +53,14 @@ def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.Mo
             }
         }
     }
+    posted = {
+        "codex_pr_quality": "second review not posted",
+        "codex_pr_logic": "second review not posted",
+    }
     login, config = _done_one_review(
         task,
         {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        posted,
     )
     assert calls["n"] == 1
     assert login == "alice"
@@ -77,7 +82,15 @@ def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.Mo
     assert _done_one_review(
         task,
         {"codex_pr_quality": "ja", "codex_pr_logic": "ja"},
+        posted,
     ) == ("", None)
+    calls["n"] = 0
+    assert _done_one_review(
+        task,
+        {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        {"codex_pr_quality": "seed", "codex_pr_logic": "seed"},
+    ) == ("", None)
+    assert calls["n"] == 0
 
     def missing(_task: dict) -> tuple[str, dict | None]:
         raise PrGuardLookupError("down")
@@ -87,6 +100,7 @@ def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.Mo
         _done_one_review(
             task,
             {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+            posted,
         )
 
 
@@ -131,11 +145,16 @@ def test_claim_done_reads_the_live_exception(
     snap["id"] = tid
     snap["checklist"]["codex_pr_quality"] = "n_a"
     snap["checklist"]["codex_pr_logic"] = "n_a"
+    snap["checklist_evidence"] = {
+        "codex_pr_quality": "second review not posted",
+        "codex_pr_logic": "second review not posted",
+    }
     snap["gates"] = [gate for gate in snap["gates"] if gate["stage"] == "grok-pr"]
 
     def load_snaps(_store: object, _session_id: str) -> list[dict]:
         fresh = dict(snap)
         fresh["checklist"] = dict(snap["checklist"])
+        fresh["checklist_evidence"] = dict(snap["checklist_evidence"])
         fresh["gates"] = list(snap["gates"])
         fresh["pull_opener"] = ""
         fresh["trusted_pr_guard"] = None
@@ -207,6 +226,59 @@ def test_pr_ready_does_not_read_the_trusted_review_list(
         run(tmp_path, ["allow", "--action", "pr-ready", "--session", "sess-1"])
     with pytest.raises(SystemExit):
         run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
+
+
+@pytest.mark.no_pg
+def test_terminal_task_does_not_read_the_trusted_review_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_cli.main import _attach_live_one_review
+
+    def boom(_task: dict) -> tuple[str, dict | None]:
+        raise AssertionError("live read")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", boom)
+    snap = {
+        "id": "done-task",
+        "state": "done",
+        "checklist": {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        "checklist_evidence": {
+            "codex_pr_quality": "second review not posted",
+            "codex_pr_logic": "second review not posted",
+        },
+    }
+    _attach_live_one_review(object(), snap)
+    assert "pull_opener" not in snap
+
+
+@pytest.mark.no_pg
+def test_wrong_evidence_does_not_read_the_trusted_review_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_cli.main import _attach_live_one_review
+
+    def boom(_task: dict) -> tuple[str, dict | None]:
+        raise AssertionError("live read")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", boom)
+
+    class RowStore:
+        def row(self, table: str, row_id: str) -> dict:
+            assert table == "task"
+            return {"id": row_id}
+
+    snap = {
+        "id": "open-task",
+        "state": "pr-review",
+        "checklist": {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        "checklist_evidence": {
+            "codex_pr_quality": "seed",
+            "codex_pr_logic": "second review not posted",
+        },
+    }
+    _attach_live_one_review(RowStore(), snap)
+    assert snap["pull_opener"] == ""
+    assert snap["trusted_pr_guard"] is None
 
 
 def test_load_task_dict_does_not_read_the_trusted_review_list(

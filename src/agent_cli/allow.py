@@ -129,6 +129,15 @@ def codex_second_review_na(key: str, evidence: str | None) -> bool:
     return key in CODEX_SECOND_REVIEW_KEYS and evidence == SECOND_REVIEW_NOT_POSTED
 
 
+def both_codex_reviews_na(statuses: Mapping[str, Any], evidence: Mapping[str, Any] | None) -> bool:
+    """Both second-review keys are n_a with evidence exactly ``second review not posted``."""
+    recorded = evidence if isinstance(evidence, Mapping) else {}
+    return all(
+        statuses.get(key) == "n_a" and recorded.get(key) == SECOND_REVIEW_NOT_POSTED
+        for key in CODEX_SECOND_REVIEW_KEYS
+    )
+
+
 def _tid(task: dict[str, Any]) -> str:
     return str(task.get("id", "?"))
 
@@ -164,19 +173,20 @@ def ready_for_done_blocking(task: dict[str, Any]) -> list[str]:
         return [f"{tid}:workflow={workflow}"]
 
     checklist = task.get("checklist") or {}
-    # Two reviews are required. Both Codex keys may be n_a only when this
-    # opener is listed in one_review_authors on the trusted default-branch
-    # file. A missing file, a missing key, or an empty list keeps both gates.
-    # An entry that exists only on the pull request head does not count.
+    # Two reviews are required. Both Codex keys may be n_a only when their
+    # evidence is exactly "second review not posted" and this opener is listed
+    # in one_review_authors on the trusted default-branch file. A missing
+    # file, a missing key, an empty list, or any other evidence keeps both
+    # gates. An entry that exists only on the pull request head does not count.
     trusted = task.get("trusted_pr_guard")
     opener = task.get("pull_opener")
-    skip_codex_gates = (
-        checklist.get("codex_pr_quality") == "n_a"
-        and checklist.get("codex_pr_logic") == "n_a"
-        and one_review_for(
-            trusted if isinstance(trusted, Mapping) else None,
-            opener if isinstance(opener, str) else "",
-        )
+    recorded = task.get("checklist_evidence")
+    skip_codex_gates = both_codex_reviews_na(
+        checklist,
+        recorded if isinstance(recorded, Mapping) else None,
+    ) and one_review_for(
+        trusted if isinstance(trusted, Mapping) else None,
+        opener if isinstance(opener, str) else "",
     )
     for key in required:
         st = checklist.get(key)

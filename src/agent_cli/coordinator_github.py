@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from .allow import GATE_PAIRS, SECOND_REVIEW_NOT_POSTED, evaluate_allow
+from .allow import GATE_PAIRS, both_codex_reviews_na, evaluate_allow
 from .coordinator_common import (
     ACCEPT_BODY,
     ACCEPT_MARKER_PREFIX,
@@ -1165,10 +1165,11 @@ def phase_formal_approve(
 def _task_snapshot(store: Store, tid: str) -> dict[str, Any]:
     task = store.row("task", tid)
     assert task is not None
-    checklist = {
-        str(r["key"]): str(r["status"])
-        for r in store.rows("checklist_item")
-        if r.get("task_id") == tid
+    checklist_rows = [r for r in store.rows("checklist_item") if r.get("task_id") == tid]
+    checklist = {str(r["key"]): str(r["status"]) for r in checklist_rows}
+    checklist_evidence = {
+        str(r["key"]): r.get("evidence") if isinstance(r.get("evidence"), str) else ""
+        for r in checklist_rows
     }
     checks = [c for c in store.rows("local_check") if c.get("task_id") == tid]
     ordered_checks = sorted(checks, key=lambda c: c.get("ran_at") or "")
@@ -1197,6 +1198,7 @@ def _task_snapshot(store: Store, tid: str) -> dict[str, Any]:
         "workflow": task.get("workflow"),
         "state": task.get("state"),
         "checklist": checklist,
+        "checklist_evidence": checklist_evidence,
         "summaries": {
             "en": task.get("change_summary_en") or "",
             "de": task.get("change_summary_de") or "",
@@ -1212,13 +1214,15 @@ def _both_codex_reviews_na(store: Store, task_id: str) -> bool:
         for row in store.rows("checklist_item")
         if row.get("task_id") == task_id
     }
+    statuses: dict[str, Any] = {}
+    evidence: dict[str, Any] = {}
     for key in ("codex_pr_quality", "codex_pr_logic"):
         row = rows.get(key)
         if not isinstance(row, dict):
             return False
-        if row.get("status") != "n_a" or row.get("evidence") != SECOND_REVIEW_NOT_POSTED:
-            return False
-    return True
+        statuses[key] = row.get("status")
+        evidence[key] = row.get("evidence")
+    return both_codex_reviews_na(statuses, evidence)
 
 
 def _trusted_done_review(

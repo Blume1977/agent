@@ -7,6 +7,7 @@ import unittest
 from agent_cli.allow import (
     CHECKLIST_KEYS,
     JA_EVIDENCE_REQUIRED,
+    SECOND_REVIEW_NOT_POSTED,
     evaluate_allow,
     ready_for_done_blocking,
     requires_evidence,
@@ -220,6 +221,10 @@ class TestEvaluateAllow(unittest.TestCase):
             "a38": {"enforce": [], "exclude": [], "default": "enforce"},
             "one_review_authors": ["alice"],
         }
+        task["checklist_evidence"] = {
+            "codex_pr_quality": SECOND_REVIEW_NOT_POSTED,
+            "codex_pr_logic": SECOND_REVIEW_NOT_POSTED,
+        }
         task["gates"] = [g for g in task["gates"] if g["stage"] == "grok-pr"]
         blocking = ready_for_done_blocking(task)
         joined = " ".join(blocking)
@@ -227,6 +232,26 @@ class TestEvaluateAllow(unittest.TestCase):
         self.assertNotIn("codex_pr_logic", joined)
         self.assertNotIn("codex-pr", joined)
         self.assertEqual(blocking, [])
+
+    def test_both_codex_n_a_without_the_evidence_still_blocks(self) -> None:
+        task = _ready_task()
+        task["checklist"]["codex_pr_quality"] = "n_a"
+        task["checklist"]["codex_pr_logic"] = "n_a"
+        task["pull_opener"] = "alice"
+        task["trusted_pr_guard"] = {
+            "schema": "pr-guard/v1",
+            "a38": {"enforce": [], "exclude": [], "default": "enforce"},
+            "one_review_authors": ["alice"],
+        }
+        task["checklist_evidence"] = {
+            "codex_pr_quality": "seed",
+            "codex_pr_logic": SECOND_REVIEW_NOT_POSTED,
+        }
+        task["gates"] = [g for g in task["gates"] if g["stage"] == "grok-pr"]
+        blocking = ready_for_done_blocking(task)
+        joined = " ".join(blocking)
+        self.assertIn("codex_pr_quality=n_a", joined)
+        self.assertIn("codex_pr_logic=n_a", joined)
 
     def test_both_codex_n_a_without_trusted_list_still_blocks(self) -> None:
         task = _ready_task()
