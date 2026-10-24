@@ -820,7 +820,7 @@ def cmd_checklist(args: list[str]) -> None:
         if len(items) != 1:
             die(f"checklist {key} for task {tid} not found")
         if status == "n_a" and key in CODEX_SECOND_REVIEW_KEYS:
-            login, config = _live_one_review(task)
+            login, config = _live_one_review(store, task)
             if not one_review_for(config, login):
                 die(
                     f"n_a for {key} requires one_review_authors "
@@ -2695,7 +2695,7 @@ def cmd_close_step(args: list[str]) -> None:
         _require_task_session_active(store, tid)
         snap = _chain_snapshot(store, tid, extra_head=head)
         if status == "n_a" and key in CODEX_SECOND_REVIEW_KEYS:
-            login, config = _live_one_review(store.row("task", tid) or {})
+            login, config = _live_one_review(store, store.row("task", tid) or {})
             snap["pull_opener"] = login
             snap["trusted_pr_guard"] = config
         wf = str(snap["workflow"])
@@ -2764,6 +2764,7 @@ def _attach_live_one_review(
     if row is None:
         return
     login, config = _done_one_review(
+        store,
         row,
         snap.get("checklist") or {},
         snap.get("checklist_evidence") or {},
@@ -2773,7 +2774,7 @@ def _attach_live_one_review(
 
 
 def _done_one_review(
-    task: dict, checklist: dict, evidence: dict | None = None
+    store: Store, task: dict, checklist: dict, evidence: dict | None = None
 ) -> tuple[str, dict | None]:
     """Live opener and trusted config for a done decision.
 
@@ -2782,22 +2783,47 @@ def _done_one_review(
     copy is not this decision. Both Codex keys must already be ``n_a`` with
     evidence exactly ``second review not posted`` before a live read. Any
     other evidence stays local. A missing pull, a missing file, or a lookup
-    error does not grant the exception.
+    error does not grant the exception. The live read uses the session's
+    bound GitHub account. A missing binding, an authentication failure, or a
+    login mismatch stops the command. There is no ambient login.
     """
     if not both_codex_reviews_na(checklist, evidence):
         return "", None
     try:
-        return _live_one_review(task)
+        return _live_one_review(store, task)
     except PrGuardLookupError:
         die("trusted review list could not be read")
 
 
-def _live_one_review(task: dict) -> tuple[str, dict | None]:
-    """Opener and trusted default-branch config. Never reads the pull request head."""
+def _bound_review_runner(store: Store, task: dict) -> Any:
+    """Session GitHub account. A missing binding does not fall back to ambient gh."""
+    from .github_accounts import AccountError, load_accounts
+
+    try:
+        return load_accounts(store.home).for_session(
+            str(task.get("session_id") or "")
+        ).runner(_exec_argv, require_git=False)
+    except AccountError as exc:
+        die(str(exc))
+
+
+def _live_one_review(store: Store, task: dict) -> tuple[str, dict | None]:
+    """Opener and trusted default-branch config. Never reads the pull request head.
+
+    Both calls use the session's bound GitHub account. A missing binding, an
+    authentication failure, or a login mismatch stops the command. There is
+    no ambient login.
+    """
+    from .github_accounts import AccountError
+
     repo, number = _task_repo_and_pr(task)
     if not repo or not number:
         return "", None
-    view = _exec_argv(["gh", "pr", "view", number, "--repo", repo, "--json", "author"])
+    runner = _bound_review_runner(store, task)
+    try:
+        view = runner(["gh", "pr", "view", number, "--repo", repo, "--json", "author"])
+    except AccountError as exc:
+        die(str(exc))
     if view.returncode != 0:
         die("trusted review list could not be read")
     try:
@@ -2809,7 +2835,9 @@ def _live_one_review(task: dict) -> tuple[str, dict | None]:
     if not login:
         return "", None
     try:
-        config = fetch_trusted_pr_guard(_exec_argv, repo)
+        config = fetch_trusted_pr_guard(runner, repo)
+    except AccountError as exc:
+        die(str(exc))
     except PrGuardLookupError:
         die("trusted review list could not be read")
     return login, config

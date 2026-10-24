@@ -39,7 +39,7 @@ def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.Mo
     stored = {"one_review_authors": ["alice"]}
     calls = {"n": 0}
 
-    def live(task: dict) -> tuple[str, dict | None]:
+    def live(_store: object, task: dict) -> tuple[str, dict | None]:
         calls["n"] += 1
         assert task["payload"]["one_review_author"]["trusted_pr_guard"] == stored
         return "alice", None
@@ -58,6 +58,7 @@ def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.Mo
         "codex_pr_logic": "second review not posted",
     }
     login, config = _done_one_review(
+        object(),
         task,
         {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
         posted,
@@ -75,29 +76,32 @@ def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.Mo
     assert "codex_pr_quality=n_a" in blocking
     assert "codex_pr_logic=n_a" in blocking
 
-    def boom(_task: dict) -> tuple[str, dict | None]:
+    def boom(_store: object, _task: dict) -> tuple[str, dict | None]:
         raise AssertionError("live read")
 
     monkeypatch.setattr("agent_cli.main._live_one_review", boom)
     assert _done_one_review(
+        object(),
         task,
         {"codex_pr_quality": "ja", "codex_pr_logic": "ja"},
         posted,
     ) == ("", None)
     calls["n"] = 0
     assert _done_one_review(
+        object(),
         task,
         {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
         {"codex_pr_quality": "seed", "codex_pr_logic": "seed"},
     ) == ("", None)
     assert calls["n"] == 0
 
-    def missing(_task: dict) -> tuple[str, dict | None]:
+    def missing(_store: object, _task: dict) -> tuple[str, dict | None]:
         raise PrGuardLookupError("down")
 
     monkeypatch.setattr("agent_cli.main._live_one_review", missing)
     with pytest.raises(SystemExit, match="trusted review list could not be read"):
         _done_one_review(
+            object(),
             task,
             {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
             posted,
@@ -162,14 +166,14 @@ def test_claim_done_reads_the_live_exception(
 
     monkeypatch.setattr("agent_cli.main.load_session_tasks", load_snaps)
 
-    def listed(_task: dict) -> tuple[str, dict | None]:
+    def listed(_store: object, _task: dict) -> tuple[str, dict | None]:
         return "alice", {"one_review_authors": ["alice"]}
 
     monkeypatch.setattr("agent_cli.main._live_one_review", listed)
     run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
     assert "allow action=claim-done" in capsys.readouterr().out
 
-    def missing_list(_task: dict) -> tuple[str, dict | None]:
+    def missing_list(_store: object, _task: dict) -> tuple[str, dict | None]:
         return "alice", None
 
     monkeypatch.setattr("agent_cli.main._live_one_review", missing_list)
@@ -178,7 +182,7 @@ def test_claim_done_reads_the_live_exception(
     denied = capsys.readouterr()
     assert "codex_pr_quality=n_a" in f"{denied.out}\n{denied.err}"
 
-    def down(_task: dict) -> tuple[str, dict | None]:
+    def down(_store: object, _task: dict) -> tuple[str, dict | None]:
         raise PrGuardLookupError("down")
 
     monkeypatch.setattr("agent_cli.main._live_one_review", down)
@@ -189,7 +193,7 @@ def test_claim_done_reads_the_live_exception(
 def test_pr_ready_does_not_read_the_trusted_review_list(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def boom(_task: dict) -> tuple[str, dict | None]:
+    def boom(_store: object, _task: dict) -> tuple[str, dict | None]:
         raise AssertionError("live read")
 
     monkeypatch.setattr("agent_cli.main._live_one_review", boom)
@@ -234,7 +238,7 @@ def test_terminal_task_does_not_read_the_trusted_review_list(
 ) -> None:
     from agent_cli.main import _attach_live_one_review
 
-    def boom(_task: dict) -> tuple[str, dict | None]:
+    def boom(_store: object, _task: dict) -> tuple[str, dict | None]:
         raise AssertionError("live read")
 
     monkeypatch.setattr("agent_cli.main._live_one_review", boom)
@@ -257,7 +261,7 @@ def test_wrong_evidence_does_not_read_the_trusted_review_list(
 ) -> None:
     from agent_cli.main import _attach_live_one_review
 
-    def boom(_task: dict) -> tuple[str, dict | None]:
+    def boom(_store: object, _task: dict) -> tuple[str, dict | None]:
         raise AssertionError("live read")
 
     monkeypatch.setattr("agent_cli.main._live_one_review", boom)
@@ -284,7 +288,7 @@ def test_wrong_evidence_does_not_read_the_trusted_review_list(
 def test_load_task_dict_does_not_read_the_trusted_review_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def boom(_task: dict) -> tuple[str, dict | None]:
+    def boom(_store: object, _task: dict) -> tuple[str, dict | None]:
         raise AssertionError("live read")
 
     monkeypatch.setattr("agent_cli.main._live_one_review", boom)
@@ -315,6 +319,109 @@ def test_load_task_dict_does_not_read_the_trusted_review_list(
     snap = load_task_dict(LocalStore(), "task-1")
     assert snap["pull_opener"] == ""
     assert snap["trusted_pr_guard"] is None
+
+
+class _Home:
+    def __init__(self, home: Path) -> None:
+        self.home = home
+
+
+def _bind_account(home: Path) -> None:
+    (home / "github-accounts.json").write_text(
+        json.dumps({
+            "accounts": {
+                "one": {"login": "WorkerOne", "gh_config_dir": "/accounts/one"},
+            },
+            "sessions": {"sess-1": "one"},
+        }),
+        encoding="utf-8",
+    )
+
+
+def _review_task() -> dict:
+    return {"session_id": "sess-1", "repo": "owner/repo", "ref": "7"}
+
+
+@pytest.mark.no_pg
+def test_live_one_review_missing_account_does_not_use_ambient_gh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent_cli.main import _live_one_review
+
+    def ambient(argv: list[str], cwd: str | None = None):
+        raise AssertionError(argv)
+
+    monkeypatch.setattr("agent_cli.main._exec_argv", ambient)
+    with pytest.raises(SystemExit, match="No GitHub account configured"):
+        _live_one_review(_Home(tmp_path), _review_task())
+
+
+@pytest.mark.no_pg
+def test_live_one_review_login_mismatch_does_not_read_the_pull(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent_cli.main import _live_one_review
+    from agent_cli.runtime import Completed
+
+    _bind_account(tmp_path)
+    seen: list[list[str]] = []
+
+    def ambient(argv: list[str], cwd: str | None = None) -> Completed:
+        seen.append(list(argv))
+        gh = argv[argv.index("gh"):]
+        if gh[:4] == ["gh", "api", "user", "--jq"]:
+            return Completed(0, "OtherUser\n", "")
+        raise AssertionError(gh)
+
+    monkeypatch.setattr("agent_cli.main._exec_argv", ambient)
+    with pytest.raises(SystemExit, match="does not match"):
+        _live_one_review(_Home(tmp_path), _review_task())
+    assert seen
+    assert all("GH_CONFIG_DIR=/accounts/one" in argv for argv in seen)
+    assert all(argv[0] != "gh" for argv in seen)
+
+
+@pytest.mark.no_pg
+def test_live_one_review_uses_the_session_account_for_both_calls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent_cli.main import _live_one_review
+    from agent_cli.runtime import Completed
+
+    _bind_account(tmp_path)
+    sha = "ab" * 20
+    guard = json.dumps({
+        "schema": "pr-guard/v1",
+        "a38": {"enforce": [], "exclude": [], "default": "enforce"},
+        "one_review_authors": ["alice"],
+    })
+    seen: list[list[str]] = []
+
+    def ambient(argv: list[str], cwd: str | None = None) -> Completed:
+        seen.append(list(argv))
+        assert "GH_CONFIG_DIR=/accounts/one" in argv
+        assert argv[0] != "gh"
+        gh = argv[argv.index("gh"):]
+        if gh[:4] == ["gh", "api", "user", "--jq"]:
+            return Completed(0, "WorkerOne\n", "")
+        if gh[:3] == ["gh", "pr", "view"]:
+            return Completed(0, json.dumps({"author": {"login": "alice"}}), "")
+        if gh == ["gh", "api", "repos/owner/repo"]:
+            return Completed(0, json.dumps({"default_branch": "develop"}), "")
+        if gh == ["gh", "api", "repos/owner/repo/commits/develop"]:
+            return Completed(0, json.dumps({"sha": sha}), "")
+        if gh[:2] == ["gh", "api"] and "contents/.github/pr-guard.json" in gh[-1]:
+            return Completed(0, guard, "")
+        raise AssertionError(gh)
+
+    monkeypatch.setattr("agent_cli.main._exec_argv", ambient)
+    login, config = _live_one_review(_Home(tmp_path), _review_task())
+    assert login == "alice"
+    assert config is not None
+    assert config["one_review_authors"] == ["alice"]
+    tails = [argv[argv.index("gh"):] for argv in seen]
+    assert any(tail[:3] == ["gh", "pr", "view"] for tail in tails)
+    assert any("contents/.github/pr-guard.json" in tail[-1] for tail in tails)
 
 
 def test_task_repo_and_pr_uses_the_pull_target_not_the_push_remote() -> None:

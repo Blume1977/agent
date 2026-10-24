@@ -188,12 +188,35 @@ def test_visible_transition_sentences_green_ready_unchanged():
     en, de = visible_transition_sentences({"state": "ready", "reasons": []})
     assert en == (
         "Required CI is green, the review completion is present, "
-        "and no merge conflicts exist; this pull request is ready for review."
+        "and no merge conflicts exist; this pull request is ready for review. "
+        "Two review comments are required. "
+        "One review is enough only when the pull request opener is listed in "
+        "one_review_authors in the trusted .github/pr-guard.json on the default branch. "
+        "A missing file, a missing key, or an empty list keeps two reviews required. "
+        "An entry that exists only on the pull request head does not count."
     )
     assert de == (
         "Die Required CI ist grün, der Review-Abschluss liegt vor "
-        "und es gibt keine Merge-Konflikte; dieser Pull Request ist bereit zum Review."
+        "und es gibt keine Merge-Konflikte; dieser Pull Request ist bereit "
+        "zum Review. Zwei Review-Kommentare sind Pflicht. "
+        "Ein Review reicht nur, wenn der PR-Eröffner in one_review_authors der "
+        "vertrauenswürdigen .github/pr-guard.json auf dem Default-Branch steht. "
+        "Fehlt die Datei, der Schlüssel, oder ist die Liste leer, bleiben zwei Reviews Pflicht. "
+        "Ein Eintrag nur im PR-Head zählt nicht."
     )
+
+
+def test_visible_transition_sentences_green_ready_names_the_one_review_exception():
+    en, de = visible_transition_sentences(
+        {"state": "ready", "reasons": []}, one_review=True
+    )
+    assert "because this pull request opener is listed in one_review_authors." in en
+    assert "One review is enough only when the pull request opener is listed in one_review_authors" in en
+    assert "An entry that exists only on the pull request head does not count." in en
+    assert "weil dieser PR-Eröffner in one_review_authors steht." in de
+    assert "Ein Review reicht nur, wenn der PR-Eröffner in one_review_authors" in de
+    assert "Ein Eintrag nur im PR-Head zählt nicht." in de
+    assert "Two review comments are required." not in en
 
 
 def test_visible_transition_sentences_queued_ci():
@@ -1395,10 +1418,18 @@ def test_visible_transition_sentences_missing_second_review_only():
         "reasons": [SECOND_REVIEW_MISSING],
     })
     assert en == (
-        "This pull request is back in Draft because the second review comment is missing."
+        "This pull request is back in Draft because the second review comment is missing. "
+        "One review is enough only when the pull request opener is listed in "
+        "one_review_authors in the trusted .github/pr-guard.json on the default branch. "
+        "A missing file, a missing key, or an empty list keeps two reviews required. "
+        "An entry that exists only on the pull request head does not count."
     )
     assert de == (
-        "Dieser Pull Request steht wieder auf Draft, weil der zweite Review-Kommentar fehlt."
+        "Dieser Pull Request steht wieder auf Draft, weil der zweite Review-Kommentar fehlt. "
+        "Ein Review reicht nur, wenn der PR-Eröffner in one_review_authors der "
+        "vertrauenswürdigen .github/pr-guard.json auf dem Default-Branch steht. "
+        "Fehlt die Datei, der Schlüssel, oder ist die Liste leer, bleiben zwei Reviews Pflicht. "
+        "Ein Eintrag nur im PR-Head zählt nicht."
     )
     assert "the review completion is missing or invalid" not in en
     assert "CI" not in en
