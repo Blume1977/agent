@@ -2706,9 +2706,15 @@ def cmd_close_step(args: list[str]) -> None:
 
 
 def _task_repo_and_pr(task: dict) -> tuple[str, str]:
+    """Target repository and pull number.
+
+    ``source.repo`` is the pull request target. ``task["repo"]`` is the
+    fallback. ``publication_repo`` is only the push remote and is not used.
+    """
     payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
     coord = payload.get("coordinator") if isinstance(payload.get("coordinator"), dict) else {}
-    repo = str(coord.get("publication_repo") or task.get("repo") or "")
+    source = coord.get("source") if isinstance(coord.get("source"), dict) else {}
+    repo = str(source.get("repo") or task.get("repo") or "")
     number = coord.get("pr_number")
     if number is None:
         ref = str(task.get("ref") or "")

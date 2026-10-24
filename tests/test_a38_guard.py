@@ -234,6 +234,7 @@ class FakeAPI:
         self.satisfy_review = True
         # Comment reads after this one no longer inject a declaration.
         self.satisfy_review_until_read: int | None = None
+        self.include_second_review = True
         self.review_threads: list[dict[str, Any]] = []
         self.files: dict[tuple[str, str], bytes] = {}
         self.tree_paths: dict[str, list[str]] = {
@@ -522,28 +523,29 @@ class FakeAPI:
                         for lane in second_lanes
                     ],
                 }
-                chunk.append({
-                    "id": 9_000_000_001,
-                    "created_at": "2099-01-02T00:00:00Z",
-                    "updated_at": "2099-01-02T00:00:00Z",
-                    "user": {"id": AUTHOR_ID, "login": "author", "type": "User"},
-                    "body": (
-                        "EN:\n"
-                        "Second review with Acme model\n"
-                        "No defects.\n"
-                        "\n"
-                        "DE:\n"
-                        "Zweiter Review mit Acme model\n"
-                        "Keine Mängel.\n"
-                        "\n"
-                        + render_review_record(second_record)
-                        + "<!-- A38-REVIEW:v1 -->\n"
-                        "```json\n"
-                        + json.dumps(second_declaration)
-                        + "\n```\n"
-                        "<!-- /A38-REVIEW:v1 -->\n"
-                    ),
-                })
+                if self.include_second_review:
+                    chunk.append({
+                        "id": 9_000_000_001,
+                        "created_at": "2099-01-02T00:00:00Z",
+                        "updated_at": "2099-01-02T00:00:00Z",
+                        "user": {"id": AUTHOR_ID, "login": "author", "type": "User"},
+                        "body": (
+                            "EN:\n"
+                            "Second review with Acme model\n"
+                            "No defects.\n"
+                            "\n"
+                            "DE:\n"
+                            "Zweiter Review mit Acme model\n"
+                            "Keine Mängel.\n"
+                            "\n"
+                            + render_review_record(second_record)
+                            + "<!-- A38-REVIEW:v1 -->\n"
+                            "```json\n"
+                            + json.dumps(second_declaration)
+                            + "\n```\n"
+                            "<!-- /A38-REVIEW:v1 -->\n"
+                        ),
+                    })
             if start + per_page < len(self.comments):
                 next_page = page + 1
                 headers["link"] = (

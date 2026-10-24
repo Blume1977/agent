@@ -396,7 +396,8 @@ def fetch_trusted_pr_guard(runner: Any, repo: str) -> dict[str, Any] | None:
     missing key, or an empty list keeps two reviews required. An entry that
     exists only on the pull request head does not count: this read never uses
     the head. A missing file returns None. Malformed JSON returns None. A
-    transport failure raises ``PrGuardLookupError``.
+    duplicate key returns None. A transport failure raises
+    ``PrGuardLookupError``.
     """
     if not isinstance(repo, str) or _REPO_RE.fullmatch(repo) is None:
         return None
@@ -432,12 +433,6 @@ def fetch_trusted_pr_guard(runner: Any, repo: str) -> dict[str, Any] | None:
         raise PrGuardLookupError("trusted pr-guard file could not be read")
     raw = getattr(completed, "stdout", "") or ""
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    try:
-        return load_pr_guard_config(json.dumps(payload))
+        return load_pr_guard_config(raw)
     except PrGuardConfigError:
         return None

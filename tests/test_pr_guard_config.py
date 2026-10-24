@@ -255,6 +255,30 @@ def test_fetch_trusted_pr_guard_reads_the_default_branch_commit() -> None:
     assert any(f"ref={sha}" in argv[-1] for argv in seen)
 
 
+def test_fetch_trusted_pr_guard_duplicate_one_review_authors_is_not_an_exception() -> None:
+    raw = (
+        '{"schema":"pr-guard/v1",'
+        '"a38":{"enforce":[],"exclude":[],"default":"enforce"},'
+        '"one_review_authors":[],'
+        '"one_review_authors":["alice"]}'
+    )
+    sha = "c" * 40
+
+    def runner(argv: list[str]) -> _Completed:
+        path = argv[-1]
+        if path == "repos/acme/widget":
+            return _Completed(0, json.dumps({"default_branch": "develop"}))
+        if path == "repos/acme/widget/commits/develop":
+            return _Completed(0, json.dumps({"sha": sha}))
+        if path == f"repos/acme/widget/contents/.github/pr-guard.json?ref={sha}":
+            return _Completed(0, raw)
+        raise AssertionError(argv)
+
+    config = fetch_trusted_pr_guard(runner, "acme/widget")
+    assert config is None
+    assert one_review_for(config, "alice") is False
+
+
 def test_fetch_trusted_pr_guard_missing_file_is_not_an_exception() -> None:
     def runner(argv: list[str]) -> _Completed:
         path = argv[-1]

@@ -29,6 +29,32 @@ def _last_agent_id(out: str) -> str:
     return agent_line.split()[1]
 
 
+def test_task_repo_and_pr_uses_the_pull_target_not_the_push_remote() -> None:
+    from agent_cli.main import _task_repo_and_pr
+
+    repo, number = _task_repo_and_pr({
+        "repo": "ignored/task-repo",
+        "ref": "12",
+        "payload": {
+            "coordinator": {
+                "publication_repo": "fork/widget",
+                "pr_number": 34,
+                "source": {"repo": "acme/widget"},
+            }
+        },
+    })
+    assert repo == "acme/widget"
+    assert number == "34"
+
+    fallback_repo, fallback_number = _task_repo_and_pr({
+        "repo": "acme/widget",
+        "ref": "12",
+        "payload": {"coordinator": {"publication_repo": "fork/widget"}},
+    })
+    assert fallback_repo == "acme/widget"
+    assert fallback_number == "12"
+
+
 def test_session_task_checklist_status(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     run(tmp_path, ["init"])
     run(tmp_path, ["session", "register", "--id", "sess-1", "--kind", "human", "--skill", "spine", "--skill", "review-loop", "--skill", "pr-review"])
