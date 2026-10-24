@@ -2359,7 +2359,6 @@ def load_task_dict(store: Store, tid: str) -> dict:
         }
         for g in ordered_gates
     ]
-    login, config = _done_one_review(task, checklist)
     return {
         "id": task["id"],
         "session_id": task.get("session_id"),
@@ -2372,8 +2371,8 @@ def load_task_dict(store: Store, tid: str) -> dict:
         },
         "gates": gates,
         "local_checks": local_checks,
-        "pull_opener": login,
-        "trusted_pr_guard": config,
+        "pull_opener": "",
+        "trusted_pr_guard": None,
     }
 
 
@@ -2465,6 +2464,9 @@ def _assert_ready(store: Store, task: dict) -> None:
             if not isinstance(evidence, str) or evidence == "":
                 die("task is not done: checklist mergeable=ja requires evidence")
     snap = load_task_dict(store, tid)
+    login, config = _done_one_review(task, snap.get("checklist") or {})
+    snap["pull_opener"] = login
+    snap["trusted_pr_guard"] = config
     blocking = ready_for_done_blocking(snap)
     if not blocking:
         return
@@ -2533,6 +2535,11 @@ def cmd_allow(args: list[str]) -> None:
                 die("Usage: agent allow --action task-done --task ID")
             else:
                 snap = load_task_dict(store, task_id)
+                row = store.row("task", task_id)
+                if row is not None:
+                    login, config = _done_one_review(row, snap.get("checklist") or {})
+                    snap["pull_opener"] = login
+                    snap["trusted_pr_guard"] = config
                 session = _need(store, "session", str(snap.get("session_id") or ""))
                 _require_skill(session, "spine")
                 session_tasks = [snap]
@@ -2724,9 +2731,10 @@ def _task_repo_and_pr(task: dict) -> tuple[str, str]:
 def _done_one_review(task: dict, checklist: dict) -> tuple[str, dict | None]:
     """Live opener and trusted config for a done decision.
 
-    The stored payload copy is not this decision. Both Codex keys must
-    already be ``n_a`` before a live read. A missing pull, a missing file,
-    or a lookup error does not grant the exception.
+    ``load_task_dict`` stays local and does not call this. The stored payload
+    copy is not this decision. Both Codex keys must already be ``n_a`` before
+    a live read. A missing pull, a missing file, or a lookup error does not
+    grant the exception.
     """
     if checklist.get("codex_pr_quality") != "n_a" or checklist.get("codex_pr_logic") != "n_a":
         return "", None

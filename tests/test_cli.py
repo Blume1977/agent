@@ -90,6 +90,43 @@ def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.Mo
         )
 
 
+@pytest.mark.no_pg
+def test_load_task_dict_does_not_read_the_trusted_review_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(_task: dict) -> tuple[str, dict | None]:
+        raise AssertionError("live read")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", boom)
+
+    class LocalStore:
+        def row(self, table: str, row_id: str) -> dict | None:
+            assert (table, row_id) == ("task", "task-1")
+            return {
+                "id": "task-1",
+                "payload": {
+                    "one_review_author": {
+                        "pull_opener": "alice",
+                        "trusted_pr_guard": {"one_review_authors": ["alice"]},
+                    }
+                },
+            }
+
+        def rows(self, table: str) -> list[dict]:
+            if table == "checklist_item":
+                return [
+                    {"task_id": "task-1", "key": "codex_pr_quality", "status": "n_a"},
+                    {"task_id": "task-1", "key": "codex_pr_logic", "status": "n_a"},
+                ]
+            if table in ("local_check", "review_gate"):
+                return []
+            raise AssertionError(table)
+
+    snap = load_task_dict(LocalStore(), "task-1")
+    assert snap["pull_opener"] == ""
+    assert snap["trusted_pr_guard"] is None
+
+
 def test_task_repo_and_pr_uses_the_pull_target_not_the_push_remote() -> None:
     from agent_cli.main import _task_repo_and_pr
 

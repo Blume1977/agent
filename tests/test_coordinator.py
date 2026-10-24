@@ -474,8 +474,187 @@ def test_human_merge_only_completion(tmp_path: Path, monkeypatch: pytest.MonkeyP
     tick(store, worker, runner=fake, lane_runner=lane_runner(fake))
     task = store.row("task", tid)
     assert task["state"] == "done"
+    merged = [row for row in store.rows("activity") if row.get("type") == "pr.merged"]
+    assert merged and merged[0]["payload"]["merged_by"] == "human-owner"
     assert any(r.get("type") == "pr.merged" for r in store.rows("activity"))
     assert any(r.get("type") == "issue.assigned.ack" for r in store.rows("activity"))
+
+
+def _seed_one_review_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    tid: str,
+    stored_login: str,
+) -> tuple[Any, Any, FakeGh]:
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    fake = FakeGh()
+    patch_account_runners(monkeypatch, fake)
+    patch_execute_github(monkeypatch)
+    seed_task(
+        store,
+        worker,
+        tid,
+        {
+            "id": tid,
+            "session_id": "worker-session",
+            "workflow": "implement",
+            "title": "t",
+            "repo": "example/project",
+            "ref": "42",
+            "payload": {
+                "one_review_author": {
+                    "pull_opener": stored_login,
+                    "trusted_pr_guard": {"one_review_authors": [stored_login]},
+                },
+                "coordinator": {
+                    "phase": "await_merge",
+                    "source": {
+                        "repo": "example/project",
+                        "number": 7,
+                        "assigned_id": "assigned-1",
+                        "publication_repo": "example/project",
+                        "base": "develop",
+                        "title": "Fix",
+                    },
+                    "pr_number": 42,
+                    "publication_repo": "example/project",
+                    "head_sha": fake.head,
+                    "worktree": str(worker.workspace_root / tid),
+                    "evidence": {"ready_head": fake.head},
+                },
+            },
+            "state": "pr-review",
+            "current_round": 1,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "change_summary_en": "Implemented example/project#7.",
+            "change_summary_de": "Umsetzung von example/project#7.",
+        },
+    )
+    from agent_cli.allow import CHECKLIST_KEYS
+
+    for key in CHECKLIST_KEYS["implement"]:
+        if key in ("codex_pr_quality", "codex_pr_logic"):
+            status, evidence = "n_a", "second review not posted"
+        elif key in ("deviation_declared", "deviation_granted"):
+            status, evidence = "n_a", "seed"
+        else:
+            status, evidence = "ja", "seed"
+        store.write(
+            "checklist_item",
+            "insert",
+            f"{tid}-{key}",
+            {
+                "id": f"{tid}-{key}",
+                "task_id": tid,
+                "key": key,
+                "status": status,
+                "evidence": evidence,
+                "source": "human" if key in ("spec_written", "deviation_declared", "deviation_granted") else "script",
+                "deviation_declared": False,
+                "deviation_granted": False,
+                "granted_by": None,
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+        )
+    for dim in ("quality", "logic"):
+        store.write(
+            "review_gate",
+            "insert",
+            f"{tid}-grok-{dim}",
+            {
+                "id": f"{tid}-grok-{dim}",
+                "task_id": tid,
+                "stage": "grok-pr",
+                "dimension": dim,
+                "vendor": "grok",
+                "verdict": "approved",
+                "evidence": None,
+                "head_sha": fake.head,
+                "agent_id": "a",
+                "recorded_at": "2026-01-01T00:00:00Z",
+            },
+        )
+    store.write(
+        "local_check",
+        "insert",
+        f"{tid}-lc",
+        {
+            "id": f"{tid}-lc",
+            "task_id": tid,
+            "name": "coordinator-check",
+            "command": "/operator/checks",
+            "result": "pass",
+            "output": "ok",
+            "ran_at": "2026-01-01T00:00:00Z",
+            "head_sha": fake.head,
+        },
+    )
+    fake.pr["state"] = "MERGED"
+    fake.pr["mergedAt"] = "2026-09-01T12:00:00Z"
+    fake.pr["mergeCommit"] = {"oid": "dddddddddddddddddddddddddddddddddddddddd"}
+    fake.pr["mergedBy"] = {"login": "human-owner", "type": "User"}
+    return store, worker, fake
+
+
+def test_human_merge_done_reads_the_live_one_review_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _seed_one_review_merge(
+        tmp_path,
+        monkeypatch,
+        tid="55555555-5555-4555-8555-555555555551",
+        stored_login="alice",
+    )
+    _list_opener(fake, "worker-bot")
+    tick(store, worker, runner=fake, lane_runner=lane_runner(fake))
+    task = store.row("task", "55555555-5555-4555-8555-555555555551")
+    assert task is not None and task["state"] == "done"
+    merged = [row for row in store.rows("activity") if row.get("type") == "pr.merged"]
+    assert merged and merged[0]["payload"]["merged_by"] == "human-owner"
+
+
+def test_human_merge_stays_blocked_when_the_trusted_file_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _seed_one_review_merge(
+        tmp_path,
+        monkeypatch,
+        tid="55555555-5555-4555-8555-555555555552",
+        stored_login="worker-bot",
+    )
+    lines = tick(store, worker, runner=fake, lane_runner=lane_runner(fake))
+    task = store.row("task", "55555555-5555-4555-8555-555555555552")
+    assert task is not None and task["state"] != "done"
+    assert any("task-done blocked" in line for line in lines)
+
+
+def test_human_merge_retries_when_the_trusted_list_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _seed_one_review_merge(
+        tmp_path,
+        monkeypatch,
+        tid="55555555-5555-4555-8555-555555555553",
+        stored_login="alice",
+    )
+    _list_opener(fake, "worker-bot")
+
+    def boom(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        from agent_cli.pr_guard_config import PrGuardLookupError
+
+        raise PrGuardLookupError("down")
+
+    monkeypatch.setattr("agent_cli.coordinator_github.fetch_trusted_pr_guard", boom)
+    lines = tick(store, worker, runner=fake, lane_runner=lane_runner(fake))
+    task = store.row("task", "55555555-5555-4555-8555-555555555553")
+    assert task is not None and task["state"] != "done"
+    assert any("trusted review list could not be read" in line for line in lines)
 
 
 def test_merge_missing_type_is_not_human(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1221,6 +1221,37 @@ def _both_codex_reviews_na(store: Store, task_id: str) -> bool:
     return True
 
 
+def _trusted_done_review(
+    store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner
+) -> tuple[str, dict[str, Any] | None]:
+    """Live opener and trusted config for a done decision.
+
+    One review is enough only when the pull request opener is listed in
+    one_review_authors in the trusted .github/pr-guard.json on the default
+    branch. A missing file, a missing key, or an empty list keeps two reviews
+    required. An entry that exists only on the pull request head does not count.
+    A stored payload copy is not this decision. A lookup failure raises
+    ``CiObservationTransportError``.
+    """
+    if not _both_codex_reviews_na(store, task["id"]):
+        return "", None
+    target = target_repo(task)
+    number = as_int(coord(task).get("pr_number"))
+    if number is None or not target:
+        return "", None
+    scoped_runner = scoped(store, worker.session_id, runner)
+    pr = _fetch_pr_json(scoped_runner, target, number, "author")
+    author = pr.get("author") if isinstance(pr, dict) and isinstance(pr.get("author"), dict) else {}
+    login = str(author.get("login") or "")
+    if not login:
+        return "", None
+    try:
+        config = fetch_trusted_pr_guard(scoped_runner, target)
+    except PrGuardLookupError as exc:
+        raise CiObservationTransportError("trusted pr-guard file could not be read") from exc
+    return login, config
+
+
 def _opener_one_review(
     store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner
 ) -> bool:
@@ -1231,22 +1262,7 @@ def _opener_one_review(
     branch. A missing file, a missing key, or an empty list keeps two reviews
     required. An entry that exists only on the pull request head does not count.
     """
-    if not _both_codex_reviews_na(store, task["id"]):
-        return False
-    target = target_repo(task)
-    number = as_int(coord(task).get("pr_number"))
-    if number is None or not target:
-        return False
-    scoped_runner = scoped(store, worker.session_id, runner)
-    pr = _fetch_pr_json(scoped_runner, target, number, "author")
-    author = pr.get("author") if isinstance(pr, dict) and isinstance(pr.get("author"), dict) else {}
-    login = str(author.get("login") or "")
-    if not login:
-        return False
-    try:
-        config = fetch_trusted_pr_guard(scoped_runner, target)
-    except PrGuardLookupError as exc:
-        raise CiObservationTransportError("trusted pr-guard file could not be read") from exc
+    login, config = _trusted_done_review(store, worker, task, runner)
     return one_review_for(config, login)
 
 
@@ -1570,6 +1586,12 @@ def phase_await_merge(store: Store, worker: WorkerConfig, task: dict[str, Any], 
                 "describing the actual result"
             ]
         snap = _task_snapshot(store, task["id"])
+        try:
+            opener, config = _trusted_done_review(store, worker, task, runner)
+        except CiObservationTransportError:
+            return ["trusted review list could not be read; retrying await_merge"]
+        snap["pull_opener"] = opener
+        snap["trusted_pr_guard"] = config
         allow = evaluate_allow(
             "task-done",
             session_id=worker.session_id,
