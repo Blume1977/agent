@@ -201,6 +201,10 @@ class FakeGh:
         self.branches = {"develop"}
         self.staged = False
         self.commit_count = 0
+        self.pr_guard_body: str | None = None
+        self.revoke_one_review_on_pr_comment = False
+        self.fail_pr_guard_after_comment = False
+        self.ready_calls = 0
 
     def __call__(self, argv: list[str]) -> Completed:
         if argv and argv[0] == "env":
@@ -328,9 +332,19 @@ class FakeGh:
             cid = 100 + len(self.pr_comments)
             self.pr_comments.append({"id": cid, "body": body, "user": {"login": "worker-bot"},
                                      "html_url": f"https://github.com/example/project/pull/42#issuecomment-{cid}"})
+            if self.revoke_one_review_on_pr_comment:
+                self.pr_guard_body = json.dumps(
+                    {
+                        "schema": "pr-guard/v1",
+                        "a38": {"enforce": [], "exclude": [], "default": "enforce"},
+                        "one_review_authors": [],
+                    }
+                )
+                self.revoke_one_review_on_pr_comment = False
             return Completed(0, self.pr_comments[-1]["html_url"], "")
 
         if argv[:3] == ["gh", "pr", "ready"]:
+            self.ready_calls += 1
             self.pr["isDraft"] = False
             return Completed(0, "", "")
 
@@ -406,6 +420,18 @@ class FakeGh:
             if "--paginate" in argv and "--slurp" not in argv:
                 return Completed(0, "invalid concatenated pages", "")
             return Completed(0, json.dumps(self.comments), "")
+
+        if argv[:2] == ["gh", "api"] and argv[-1] == "repos/example/project":
+            return Completed(0, json.dumps({"default_branch": "develop"}), "")
+        if argv[:2] == ["gh", "api"] and str(argv[-1]).startswith("repos/example/project/commits/"):
+            return Completed(0, json.dumps({"sha": "c" * 40}), "")
+        if argv[:2] == ["gh", "api"] and "contents/.github/pr-guard.json" in str(argv[-1]):
+            if self.fail_pr_guard_after_comment and self.pr_comments:
+                self.fail_pr_guard_after_comment = False
+                return Completed(1, "", "connection reset")
+            if not self.pr_guard_body:
+                return Completed(1, "", "HTTP 404: Not Found")
+            return Completed(0, self.pr_guard_body, "")
 
         return Completed(1, "", f"unhandled: {argv}")
 

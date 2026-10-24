@@ -784,6 +784,35 @@ def _pr_review_scope(dimension: str) -> str:
     )
 
 
+def _promote_posted_codex_checklist(
+    store: Store,
+    task: dict[str, Any],
+    *,
+    stage: str,
+    head: str,
+    dimension: str,
+) -> None:
+    """Replace Codex checklist n_a with ja after that review is approved.
+
+    Pending keys stay untouched, so a retry whose gate is already approved
+    does not turn an unfinished step into a blocker. The lane start is not
+    skipped: this runs only for a gate that is already approved.
+    """
+    key = f"codex_pr_{dimension}"
+    snap = checklist_snapshot(store, task)
+    current = (snap.get("checklist") or {}).get(key)
+    if current != "n_a":
+        return
+    set_checklist(
+        store,
+        task,
+        key,
+        "ja",
+        f"{stage}/{dimension} on {head}",
+        source="script",
+    )
+
+
 def phase_pr_gates(
     store: Store,
     worker: WorkerConfig,
@@ -834,6 +863,11 @@ def phase_pr_gates(
         and g.get("head_sha") == head
         for dim in ("quality", "logic")
     ):
+        if vendor == "codex":
+            for dim in ("quality", "logic"):
+                _promote_posted_codex_checklist(
+                    store, task, stage=stage, head=head, dimension=dim
+                )
         c["phase"] = "pr_gates_codex" if vendor == "grok" else "ci"
         save_task(store, task)
         return [f"{stage} already complete on {head[:7]}"]
@@ -847,6 +881,10 @@ def phase_pr_gates(
             and existing.get("verdict") == "approved"
             and existing.get("head_sha") == head
         ):
+            if vendor == "codex":
+                _promote_posted_codex_checklist(
+                    store, task, stage=stage, head=head, dimension=dimension
+                )
             lines.append(f"{stage}/{dimension}=approved (cached)")
             continue
         needed.append((dimension, role))

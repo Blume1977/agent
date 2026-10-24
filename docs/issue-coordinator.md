@@ -199,7 +199,15 @@ for worker in workers.values():
    `pr_gates_codex` and a pinned `question_activity_id` — not a rejected
    complete gate and not an implementer fix loop. Rejections publish
    `review.post` **COMMENT** (not `REQUEST_CHANGES`) and invalidate
-   head-specific evidence.
+   head-specific evidence. A successful Codex lane still starts when the
+   checklist keys are `n_a`. It replaces `n_a` with `ja` for
+   `codex_pr_quality` and `codex_pr_logic`, including on a later tick whose
+   gate is already approved. After `ja`, both Codex gates are required again.
+   `n_a` alone does not grant Ready or done. One review is enough only when
+   the pull request opener is listed in one_review_authors in the trusted
+   .github/pr-guard.json on the default branch. A missing file, a missing
+   key, or an empty list keeps two reviews required. An entry that exists
+   only on the pull request head does not count.
 8. **CI**: exact-head PR check rollup **and** paginated head workflow inventory
    (path+event+attempt), classified by one shared observer used by both
    ordinary `phase_ci` and Ready-side fresh rechecks. Only `success` counts.
@@ -228,7 +236,14 @@ for worker in workers.values():
    cleared). Stdout must be the fixed JSON readiness contract below (trusted
    operator script output — not model/repo input). Re-verify clean signed head
    **after** the command, re-observe CI fresh (no stale `ci_green`), unchanged PR
-   head, author/base/mergeability, tests, and all four same-head gates. Fresh
+   head, author/base/mergeability, tests, and all four same-head gates. The two
+   `codex-pr` gates are omitted on readiness, formal approve, and leave-draft
+   only when both Codex checklist keys are already `n_a`, the evidence is
+   exactly `second review not posted`, and the opener is listed in
+   one_review_authors in the trusted .github/pr-guard.json on the default
+   branch. A missing file, a missing key, or an empty list keeps all four
+   gates required. An entry that exists only on the pull request head does not
+   count. Fresh
    CI rechecks on readiness / formal_approve / leave-draft (including after the
    Ready evidence comment) treat pending / absent-yet evidence and transient
    observation or PR-metadata transport as same-phase retry: no new authorized
@@ -260,7 +275,21 @@ for worker in workers.values():
    counted as approval. The resumed post-dismissal attempt uses a new durable
    activity occurrence (same attempt stays crash-idempotent; a dismissed
    same-marker APPROVE fails closed in `review.post` and cannot be marked
-   done). One evidence comment (must complete with `execution_status=done`),
+   done). One evidence comment (must complete with `execution_status=done`).
+   When that comment relied on the one-review exception, leave-draft reads the
+   trusted list again before Ready. A transport failure retries and does not
+   set Ready. If the opener is no longer listed, it posts a new comment that
+   Ready was not set and does not call `gh pr ready`. The same correction is
+   posted on a later leave-draft when that one-review evidence comment is
+   already done, both Codex keys are still `n_a` with evidence exactly
+   `second review not posted`, and the live list no longer grants the
+   exception, before the gate check can hide it. A transport failure on that
+   later read retries and does not set Ready. A later leave-draft that
+   has both review gates posts its own evidence comment. One review is enough
+   only when the pull request opener is listed in one_review_authors in the
+   trusted .github/pr-guard.json on the default branch. A missing file, a
+   missing key, or an empty list keeps two reviews required. An entry that
+   exists only on the pull request head does not count.
    `allow pr-ready`, then leave draft and verify `isDraft=false`. **Never merge.**
 10. **Complete** only after a verified **human** merge: GitHub merge actor type
     must be exactly `User` (missing type is not human; Bot is refused). Also

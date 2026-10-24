@@ -8,7 +8,7 @@ single step is open now and who may close it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from .allow import (
     CHECKLIST_KEYS,
@@ -18,6 +18,7 @@ from .allow import (
     SECOND_REVIEW_NOT_POSTED,
     codex_second_review_na,
 )
+from .pr_guard_config import one_review_for
 
 KINDS = ("script", "agent", "human")
 # Who may set ja on these keys (source).
@@ -298,8 +299,16 @@ def close_allowed(
     want = required_source(step)
     if source != want:
         return CloseVerdict(False, f"{key} requires --source {want} (got {source})", step)
+    # A posted Codex review replaces n_a with ja. n_a already satisfied the
+    # chain, so the key is not a next step. The lane still starts. After ja,
+    # both Codex gates are required again. n_a alone does not grant them.
+    promote_codex = (
+        status == "ja"
+        and key in CODEX_SECOND_REVIEW_KEYS
+        and checklist.get(key) == "n_a"
+    )
     ready = next_steps(workflow, checklist, spine_only=False)
-    if step not in ready:
+    if step not in ready and not promote_codex:
         pending = ",".join(s.key for s in next_steps(workflow, checklist, spine_only=True)) or "-"
         return CloseVerdict(
             False,
@@ -311,6 +320,22 @@ def close_allowed(
             return CloseVerdict(
                 False,
                 f"{key} evidence must be {SECOND_REVIEW_NOT_POSTED}",
+                step,
+            )
+        # Two reviews are required. This evidence is allowed only when the
+        # opener is listed in one_review_authors on the trusted default-branch
+        # file. A missing file, a missing key, or an empty list keeps two
+        # reviews required. An entry only on the pull request head does not count.
+        snap = snapshot or {}
+        trusted = snap.get("trusted_pr_guard")
+        opener = snap.get("pull_opener")
+        if not one_review_for(
+            trusted if isinstance(trusted, Mapping) else None,
+            opener if isinstance(opener, str) else "",
+        ):
+            return CloseVerdict(
+                False,
+                f"{key} n_a requires one_review_authors in the trusted .github/pr-guard.json on the default branch. A missing file, a missing key, or an empty list keeps two reviews required. An entry that exists only on the pull request head does not count.",
                 step,
             )
         return CloseVerdict(True, "allow", step)

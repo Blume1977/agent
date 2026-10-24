@@ -28,6 +28,7 @@ from .allow import (
     GATE_UNAVAILABLE_KEYS,
     SECOND_REVIEW_NOT_POSTED,
     TERMINAL_STATES,
+    both_codex_reviews_na,
     codex_second_review_na,
     evaluate_allow,
     ready_for_done_blocking,
@@ -49,6 +50,7 @@ from .knock import listen_once as knock_listen
 from .lane import LANE_ROLES, LANE_VENDORS, LaneResult, launch
 from .local_ci import LocalCiError, parse_comment, parse_payload, render_block, verify_comment
 from .pg import PgError, cluster_exists, cluster_running, ensure_cluster, require_loopback_dsn, stop_cluster
+from .pr_guard_config import PrGuardLookupError, fetch_trusted_pr_guard, one_review_for
 from .runtime import (
     Runtime,
     grok_model,
@@ -817,6 +819,24 @@ def cmd_checklist(args: list[str]) -> None:
         items = [r for r in store.rows("checklist_item") if r.get("task_id") == tid and r.get("key") == key]
         if len(items) != 1:
             die(f"checklist {key} for task {tid} not found")
+        if status == "n_a" and key in CODEX_SECOND_REVIEW_KEYS:
+            login, config = _live_one_review(store, task)
+            if not one_review_for(config, login):
+                die(
+                    f"n_a for {key} requires one_review_authors "
+                    "in the trusted .github/pr-guard.json on the default branch. "
+                    "A missing file, a missing key, or an empty list keeps two reviews required. "
+                    "An entry that exists only on the pull request head does not count."
+                )
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            payload = dict(payload)
+            payload["one_review_author"] = {
+                "pull_opener": login,
+                "trusted_pr_guard": config,
+            }
+            task["payload"] = payload
+            task["updated_at"] = utcnow()
+            store.write("task", "update", tid, _strip(task))
         item = items[0]
         item["status"] = status
         item["source"] = source
@@ -2307,10 +2327,11 @@ def load_task_dict(store: Store, tid: str) -> dict:
     task = store.row("task", tid)
     if task is None:
         die(f"unknown task: {tid}")
-    checklist = {
-        str(r["key"]): str(r["status"])
-        for r in store.rows("checklist_item")
-        if r.get("task_id") == tid
+    checklist_rows = [r for r in store.rows("checklist_item") if r.get("task_id") == tid]
+    checklist = {str(r["key"]): str(r["status"]) for r in checklist_rows}
+    checklist_evidence = {
+        str(r["key"]): r.get("evidence") if isinstance(r.get("evidence"), str) else ""
+        for r in checklist_rows
     }
     checks = [c for c in store.rows("local_check") if c.get("task_id") == tid]
     ordered_checks = list(reversed(checks))
@@ -2346,12 +2367,15 @@ def load_task_dict(store: Store, tid: str) -> dict:
         "workflow": task.get("workflow"),
         "state": task.get("state"),
         "checklist": checklist,
+        "checklist_evidence": checklist_evidence,
         "summaries": {
             "en": task.get("change_summary_en") or "",
             "de": task.get("change_summary_de") or "",
         },
         "gates": gates,
         "local_checks": local_checks,
+        "pull_opener": "",
+        "trusted_pr_guard": None,
     }
 
 
@@ -2443,6 +2467,7 @@ def _assert_ready(store: Store, task: dict) -> None:
             if not isinstance(evidence, str) or evidence == "":
                 die("task is not done: checklist mergeable=ja requires evidence")
     snap = load_task_dict(store, tid)
+    _attach_live_one_review(store, snap, row=task)
     blocking = ready_for_done_blocking(snap)
     if not blocking:
         return
@@ -2511,6 +2536,7 @@ def cmd_allow(args: list[str]) -> None:
                 die("Usage: agent allow --action task-done --task ID")
             else:
                 snap = load_task_dict(store, task_id)
+                _attach_live_one_review(store, snap)
                 session = _need(store, "session", str(snap.get("session_id") or ""))
                 _require_skill(session, "spine")
                 session_tasks = [snap]
@@ -2531,7 +2557,27 @@ def cmd_allow(args: list[str]) -> None:
                 session_tasks=[],
                 create_has_draft=create_has_draft,
             )
+        elif action == "claim-done":
+            # Same done predicate as task-done. Read the trusted list live
+            # only for an open task whose both second-review keys are already
+            # n_a with evidence exactly "second review not posted".
+            if session_id:
+                session = _need(store, "session", session_id)
+                _require_skill(session, "spine")
+                session_tasks = load_session_tasks(store, session_id)
+                for snap in session_tasks:
+                    if str(snap.get("state") or "") in TERMINAL_STATES:
+                        continue
+                    _attach_live_one_review(store, snap)
+            result = evaluate_allow(
+                action,
+                session_id=session_id,
+                task_id=task_id,
+                session_tasks=session_tasks,
+                create_has_draft=create_has_draft,
+            )
         else:
+            # pr-ready stays on the local snapshot and does not call GitHub.
             if session_id:
                 session = _need(store, "session", session_id)
                 _require_skill(session, "spine")
@@ -2648,6 +2694,10 @@ def cmd_close_step(args: list[str]) -> None:
     try:
         _require_task_session_active(store, tid)
         snap = _chain_snapshot(store, tid, extra_head=head)
+        if status == "n_a" and key in CODEX_SECOND_REVIEW_KEYS:
+            login, config = _live_one_review(store, store.row("task", tid) or {})
+            snap["pull_opener"] = login
+            snap["trusted_pr_guard"] = config
         wf = str(snap["workflow"])
         verdict = close_allowed(
             wf,
@@ -2676,6 +2726,121 @@ def cmd_close_step(args: list[str]) -> None:
         evidence,
     ]
     cmd_checklist(set_args)
+
+
+def _task_repo_and_pr(task: dict) -> tuple[str, str]:
+    """Target repository and pull number.
+
+    ``source.repo`` is the pull request target. ``task["repo"]`` is the
+    fallback. ``publication_repo`` is only the push remote and is not used.
+    """
+    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+    coord = payload.get("coordinator") if isinstance(payload.get("coordinator"), dict) else {}
+    source = coord.get("source") if isinstance(coord.get("source"), dict) else {}
+    repo = str(source.get("repo") or task.get("repo") or "")
+    number = coord.get("pr_number")
+    if number is None:
+        ref = str(task.get("ref") or "")
+        number = ref if ref.isdigit() else ""
+    return repo, str(number or "")
+
+
+def _attach_live_one_review(
+    store: Store, snap: dict, row: dict | None = None
+) -> None:
+    """Copy the live exception onto one open done snapshot.
+
+    ``load_task_dict`` leaves the opener empty and the trusted config unset.
+    GitHub is read only for an open task whose both Codex keys are already
+    ``n_a`` with evidence exactly ``second review not posted``. A terminal
+    task is not read. A lookup error stops the command and does not grant
+    the exception. The stored payload copy is not read. ``pr-ready`` does
+    not call this.
+    """
+    if str(snap.get("state") or "") in TERMINAL_STATES:
+        return
+    if row is None:
+        row = store.row("task", str(snap.get("id") or ""))
+    if row is None:
+        return
+    login, config = _done_one_review(
+        store,
+        row,
+        snap.get("checklist") or {},
+        snap.get("checklist_evidence") or {},
+    )
+    snap["pull_opener"] = login
+    snap["trusted_pr_guard"] = config
+
+
+def _done_one_review(
+    store: Store, task: dict, checklist: dict, evidence: dict | None = None
+) -> tuple[str, dict | None]:
+    """Live opener and trusted config for a done decision.
+
+    Callers are task state done, ``allow task-done``, and ``allow claim-done``.
+    ``load_task_dict`` stays local and does not call this. The stored payload
+    copy is not this decision. Both Codex keys must already be ``n_a`` with
+    evidence exactly ``second review not posted`` before a live read. Any
+    other evidence stays local. A missing pull, a missing file, or a lookup
+    error does not grant the exception. The live read uses the session's
+    bound GitHub account. A missing binding, an authentication failure, or a
+    login mismatch stops the command. There is no ambient login.
+    """
+    if not both_codex_reviews_na(checklist, evidence):
+        return "", None
+    try:
+        return _live_one_review(store, task)
+    except PrGuardLookupError:
+        die("trusted review list could not be read")
+
+
+def _bound_review_runner(store: Store, task: dict) -> Any:
+    """Session GitHub account. A missing binding does not fall back to ambient gh."""
+    from .github_accounts import AccountError, load_accounts
+
+    try:
+        return load_accounts(store.home).for_session(
+            str(task.get("session_id") or "")
+        ).runner(_exec_argv, require_git=False)
+    except AccountError as exc:
+        die(str(exc))
+
+
+def _live_one_review(store: Store, task: dict) -> tuple[str, dict | None]:
+    """Opener and trusted default-branch config. Never reads the pull request head.
+
+    Both calls use the session's bound GitHub account. A missing binding, an
+    authentication failure, or a login mismatch stops the command. There is
+    no ambient login.
+    """
+    from .github_accounts import AccountError
+
+    repo, number = _task_repo_and_pr(task)
+    if not repo or not number:
+        return "", None
+    runner = _bound_review_runner(store, task)
+    try:
+        view = runner(["gh", "pr", "view", number, "--repo", repo, "--json", "author"])
+    except AccountError as exc:
+        die(str(exc))
+    if view.returncode != 0:
+        die("trusted review list could not be read")
+    try:
+        body = json.loads(view.stdout or "{}")
+    except json.JSONDecodeError:
+        die("trusted review list could not be read")
+    author = body.get("author") if isinstance(body, dict) else None
+    login = str(author.get("login") or "") if isinstance(author, dict) else ""
+    if not login:
+        return "", None
+    try:
+        config = fetch_trusted_pr_guard(runner, repo)
+    except AccountError as exc:
+        die(str(exc))
+    except PrGuardLookupError:
+        die("trusted review list could not be read")
+    return login, config
 
 
 def _exec_argv(argv: list[str], *, cwd: str | None = None) -> "Completed":

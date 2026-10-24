@@ -11,7 +11,7 @@ import re
 from collections import Counter
 from typing import Any, Mapping, Sequence
 
-from .a38_review import BLOCKING_REVIEW_REASON, LIFECYCLE_REASON
+from .a38_review import BLOCKING_REVIEW_REASON, LIFECYCLE_REASON, SECOND_REVIEW_MISSING
 from .readme_only import pull_is_guard_docs_only
 from .workflow_approval import (
     _counts_for_ready_inventory,
@@ -183,19 +183,35 @@ def _join_de_phrases(parts: list[str]) -> str:
     return ", ".join(parts[:-1]) + f" und {parts[-1]}"
 
 
+def _review_returns_ready_to_draft(reasons: Sequence[str]) -> bool:
+    """True when a review cause must return Ready to Draft, including a write hold."""
+    return any(
+        reason in {LIFECYCLE_REASON, BLOCKING_REVIEW_REASON, SECOND_REVIEW_MISSING}
+        for reason in reasons
+    )
+
+
 def _note_review(reasons: list[str], assessment: Any) -> None:
     """Enforce-only. A missing review or blocking defects return Ready to Draft.
 
-    A write hold must not keep Ready through either reason. Blocking defects
-    do not also claim that the completion comment is missing.
+    A write hold must not keep Ready through these reasons. Blocking defects
+    do not also claim that the completion comment is missing. When the only
+    review cause is ``second review comment missing``, that string is kept
+    and is not rewritten as ``Review completion missing``.
     """
     if assessment.mode != "enforce" or assessment.review_ok:
         return
     review_reasons = getattr(assessment, "review_reasons", None)
     listed = list(review_reasons) if isinstance(review_reasons, list) else []
-    others = [reason for reason in listed if reason != BLOCKING_REVIEW_REASON]
+    if SECOND_REVIEW_MISSING in listed and SECOND_REVIEW_MISSING not in reasons:
+        reasons.insert(0, SECOND_REVIEW_MISSING)
     if BLOCKING_REVIEW_REASON in listed and BLOCKING_REVIEW_REASON not in reasons:
         reasons.insert(0, BLOCKING_REVIEW_REASON)
+    others = [
+        reason
+        for reason in listed
+        if reason not in {BLOCKING_REVIEW_REASON, SECOND_REVIEW_MISSING}
+    ]
     if (others or not listed) and LIFECYCLE_REASON not in reasons:
         reasons.insert(0, LIFECYCLE_REASON)
 
@@ -210,32 +226,79 @@ def visible_transition_titles(record: Mapping) -> tuple[str, str]:
     return ("Ready for review", "Bereit zum Review")
 
 
+_ONE_REVIEW_EXCEPTION_EN = (
+    "One review is enough only when the pull request opener is listed in "
+    "one_review_authors in the trusted .github/pr-guard.json on the default branch. "
+    "A missing file, a missing key, or an empty list keeps two reviews required. "
+    "An entry that exists only on the pull request head does not count."
+)
+_ONE_REVIEW_EXCEPTION_DE = (
+    "Ein Review reicht nur, wenn der PR-Eröffner in one_review_authors der "
+    "vertrauenswürdigen .github/pr-guard.json auf dem Default-Branch steht. "
+    "Fehlt die Datei, der Schlüssel, oder ist die Liste leer, bleiben zwei Reviews Pflicht. "
+    "Ein Eintrag nur im PR-Head zählt nicht."
+)
+
+
+def _with_one_review_exception(en: str, de: str) -> tuple[str, str]:
+    return f"{en} {_ONE_REVIEW_EXCEPTION_EN}", f"{de} {_ONE_REVIEW_EXCEPTION_DE}"
+
+
 def visible_transition_sentences(
-    record: Mapping, write_ready_reason: str = ""
+    record: Mapping, write_ready_reason: str = "", *, one_review: bool = False
 ) -> tuple[str, str]:
     """Return the visible EN and DE sentences for an applied lifecycle comment.
 
     Names only the blockers present in record['reasons']. Never uses 'or'/'oder'
-    to join CI and merge conflicts. One sentence per language.
+    to join CI and merge conflicts. The blocker text is one sentence per language.
+    The green restore, and any sentence that names a missing second review
+    comment, then states the one-review exception. ``one_review`` is true only
+    when this opener is listed in one_review_authors on the trusted
+    default-branch file. A missing file, a missing key, or an empty list keeps
+    two reviews required. An entry that exists only on the pull request head
+    does not count.
     """
     raw = record.get("reasons")
     reasons = list(raw) if isinstance(raw, list) else []
     draft = record.get("state") == "draft"
     if not draft and not reasons:
-        return (
-            "Required CI is green, the review completion is present, "
-            "and no merge conflicts exist; this pull request is ready for review.",
-            "Die Required CI ist grün, der Review-Abschluss liegt vor "
-            "und es gibt keine Merge-Konflikte; dieser Pull Request ist bereit zum Review.",
-        )
+        if one_review:
+            en = (
+                "Required CI is green, the review completion is present, "
+                "and no merge conflicts exist; this pull request is ready for review "
+                "because this pull request opener is listed in one_review_authors."
+            )
+            de = (
+                "Die Required CI ist grün, der Review-Abschluss liegt vor "
+                "und es gibt keine Merge-Konflikte; dieser Pull Request ist bereit "
+                "zum Review, weil dieser PR-Eröffner in one_review_authors steht."
+            )
+        else:
+            en = (
+                "Required CI is green, the review completion is present, "
+                "and no merge conflicts exist; this pull request is ready for review. "
+                "Two review comments are required."
+            )
+            de = (
+                "Die Required CI ist grün, der Review-Abschluss liegt vor "
+                "und es gibt keine Merge-Konflikte; dieser Pull Request ist bereit "
+                "zum Review. Zwei Review-Kommentare sind Pflicht."
+            )
+        return _with_one_review_exception(en, de)
 
     conflicts = "Merge conflicts" in reasons
     review_missing = LIFECYCLE_REASON in reasons
+    second_missing = SECOND_REVIEW_MISSING in reasons
     blocking = BLOCKING_REVIEW_REASON in reasons
     ci_reasons = [
         r
         for r in reasons
-        if r not in {"Merge conflicts", LIFECYCLE_REASON, BLOCKING_REVIEW_REASON}
+        if r not in {
+            "Merge conflicts",
+            LIFECYCLE_REASON,
+            BLOCKING_REVIEW_REASON,
+            SECOND_REVIEW_MISSING,
+        }
     ]
 
     missing = any(
@@ -263,6 +326,9 @@ def visible_transition_sentences(
     if review_missing:
         en_parts.append("the review completion is missing or invalid")
         de_parts.append("der Review-Abschluss fehlt oder ungültig ist")
+    if second_missing:
+        en_parts.append("the second review comment is missing")
+        de_parts.append("der zweite Review-Kommentar fehlt")
     if blocking:
         en_parts.append("the second review found defects that must be fixed")
         de_parts.append("der zweite Review Mängel gefunden hat, die behoben werden müssen")
@@ -302,28 +368,38 @@ def visible_transition_sentences(
         de_clause = _join_de_phrases(de_parts)
 
     if draft:
-        return (
-            f"This pull request is back in Draft because {en_clause}.",
-            f"Dieser Pull Request steht wieder auf Draft, weil {de_clause}.",
-        )
-    if write_ready_reason == "author has write":
-        return (
+        en = f"This pull request is back in Draft because {en_clause}."
+        de = f"Dieser Pull Request steht wieder auf Draft, weil {de_clause}."
+    elif write_ready_reason == "author has write":
+        en = (
             f"The author has write; this pull request is ready for review "
-            f"even though {en_clause}.",
-            f"Der Autor hat Write; dieser Pull Request ist bereit zum Review, "
-            f"auch wenn {de_clause}.",
+            f"even though {en_clause}."
         )
-    return (
-        f"A write collaborator marked Ready; this pull request is ready for review "
-        f"even though {en_clause}.",
-        f"Ein Write-Collaborator hat Ready gesetzt; dieser Pull Request ist bereit "
-        f"zum Review, auch wenn {de_clause}.",
-    )
+        de = (
+            f"Der Autor hat Write; dieser Pull Request ist bereit zum Review, "
+            f"auch wenn {de_clause}."
+        )
+    else:
+        en = (
+            f"A write collaborator marked Ready; this pull request is ready for review "
+            f"even though {en_clause}."
+        )
+        de = (
+            f"Ein Write-Collaborator hat Ready gesetzt; dieser Pull Request ist bereit "
+            f"zum Review, auch wenn {de_clause}."
+        )
+    if second_missing:
+        return _with_one_review_exception(en, de)
+    return en, de
 
 
-def _complete_transition_comment(api: Any, assessment: Any, record: dict) -> None:
+def _complete_transition_comment(
+    api: Any, assessment: Any, record: dict, *, one_review: bool = False
+) -> None:
     en, de = visible_transition_sentences(
-        record, write_ready_reason=getattr(assessment, "write_ready_reason", "") or ""
+        record,
+        write_ready_reason=getattr(assessment, "write_ready_reason", "") or "",
+        one_review=one_review,
     )
     en_title, de_title = visible_transition_titles(record)
     _save_record(
@@ -1029,6 +1105,7 @@ def _has_merge_conflicts(api: Any, pull: Mapping) -> bool:
 
 def reconcile_lifecycle(api: Any, assessment: Any, *, dry_run: bool = False) -> dict:
     from .a38_guard import GuardError, assess_pull, fetch_pull, resolve_trusted_guard_config
+    from .pr_guard_config import one_review_for
     if assessment.closed or not assessment.lifecycle_enabled:
         return {}
     if assessment.scope_decision == "exclude":
@@ -1046,13 +1123,17 @@ def reconcile_lifecycle(api: Any, assessment: Any, *, dry_run: bool = False) -> 
         return {}
     if type(pull.get("draft")) is not bool or not isinstance(pull.get("node_id"), str):
         raise GuardError("pull lifecycle state missing")
+    one_review = one_review_for(
+        trusted.config if isinstance(trusted.config, Mapping) else None,
+        snap.author_login,
+    )
     # Recover the explanatory comment if an earlier process died after the
     # mutation. The durable intent precedes it and never claims success early.
     _, previous = _own_record(api, assessment, STATE_MARKER)
     if (previous.get("phase") == "planned" and previous.get("head") == snap.head_sha
             and previous.get("base") == snap.base_sha
             and previous.get("state") == ("draft" if pull["draft"] else "ready") and not dry_run):
-        _complete_transition_comment(api, assessment, previous)
+        _complete_transition_comment(api, assessment, previous, one_review=one_review)
     approval_allowlist: frozenset[str] | None = None
     if isinstance(trusted.config, Mapping):
         workflow_approval = trusted.config.get("workflow_approval")
@@ -1081,20 +1162,20 @@ def reconcile_lifecycle(api: Any, assessment: Any, *, dry_run: bool = False) -> 
         pull["draft"] and write_hold and we_drafted
         and pull.get("mergeable") is True
         and "Merge conflicts" not in reasons
-        and LIFECYCLE_REASON not in reasons
-        and BLOCKING_REVIEW_REASON not in reasons
+        and not _review_returns_ready_to_draft(reasons)
     )
     # Write collaborator Ready hold: do not auto-draft for red/missing CI while
     # author or the latest ready_for_review actor has write/maintain/admin.
-    # Confirmed merge conflicts, a missing or invalid review completion, and blocking defects always return Ready to Draft, including in a hold.
+    # Confirmed merge conflicts, a missing or invalid review completion, a
+    # missing second review comment, and blocking defects always return Ready
+    # to Draft, including in a hold.
     # Markdown-only and guard-docs are report waivers only — they do not hold Ready through red CI.
     if (
         not pull["draft"]
         and reasons
         and write_hold
         and "Merge conflicts" not in reasons
-        and LIFECYCLE_REASON not in reasons
-        and BLOCKING_REVIEW_REASON not in reasons
+        and not _review_returns_ready_to_draft(reasons)
     ):
         hold = {
             "repo": assessment.repo,
@@ -1196,8 +1277,7 @@ def reconcile_lifecycle(api: Any, assessment: Any, *, dry_run: bool = False) -> 
         target == "draft"
         and write_hold
         and "Merge conflicts" not in final_reasons
-        and LIFECYCLE_REASON not in final_reasons
-        and BLOCKING_REVIEW_REASON not in final_reasons
+        and not _review_returns_ready_to_draft(final_reasons)
     ):
         hold = {
             "repo": assessment.repo,
@@ -1277,6 +1357,6 @@ def reconcile_lifecycle(api: Any, assessment: Any, *, dry_run: bool = False) -> 
         raise GuardError(
             f"PR lifecycle REST draft did not match intended Ready/Draft state (observed {observed!r})"
         )
-    _complete_transition_comment(api, assessment, record)
+    _complete_transition_comment(api, assessment, record, one_review=one_review)
     result["reasons"] = final_reasons
     return result

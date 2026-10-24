@@ -29,6 +29,427 @@ def _last_agent_id(out: str) -> str:
     return agent_line.split()[1]
 
 
+@pytest.mark.no_pg
+def test_done_decision_ignores_the_stored_one_review_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_cli.allow import ready_for_done_blocking
+    from agent_cli.main import _done_one_review
+    from agent_cli.pr_guard_config import PrGuardLookupError
+    from test_allow import _ready_task
+
+    stored = {"one_review_authors": ["alice"]}
+    calls = {"n": 0}
+
+    def live(_store: object, task: dict) -> tuple[str, dict | None]:
+        calls["n"] += 1
+        assert task["payload"]["one_review_author"]["trusted_pr_guard"] == stored
+        return "alice", None
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", live)
+    task = {
+        "payload": {
+            "one_review_author": {
+                "pull_opener": "alice",
+                "trusted_pr_guard": stored,
+            }
+        }
+    }
+    posted = {
+        "codex_pr_quality": "second review not posted",
+        "codex_pr_logic": "second review not posted",
+    }
+    login, config = _done_one_review(
+        object(),
+        task,
+        {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        posted,
+    )
+    assert calls["n"] == 1
+    assert login == "alice"
+    assert config is None
+    done = _ready_task()
+    done["checklist"]["codex_pr_quality"] = "n_a"
+    done["checklist"]["codex_pr_logic"] = "n_a"
+    done["gates"] = [gate for gate in done["gates"] if gate["stage"] == "grok-pr"]
+    done["pull_opener"] = login
+    done["trusted_pr_guard"] = config
+    blocking = " ".join(ready_for_done_blocking(done))
+    assert "codex_pr_quality=n_a" in blocking
+    assert "codex_pr_logic=n_a" in blocking
+
+    def boom(_store: object, _task: dict) -> tuple[str, dict | None]:
+        raise AssertionError("live read")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", boom)
+    assert _done_one_review(
+        object(),
+        task,
+        {"codex_pr_quality": "ja", "codex_pr_logic": "ja"},
+        posted,
+    ) == ("", None)
+    calls["n"] = 0
+    assert _done_one_review(
+        object(),
+        task,
+        {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        {"codex_pr_quality": "seed", "codex_pr_logic": "seed"},
+    ) == ("", None)
+    assert calls["n"] == 0
+
+    def missing(_store: object, _task: dict) -> tuple[str, dict | None]:
+        raise PrGuardLookupError("down")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", missing)
+    with pytest.raises(SystemExit, match="trusted review list could not be read"):
+        _done_one_review(
+            object(),
+            task,
+            {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+            posted,
+        )
+
+
+# Not no_pg: agent init opens the store. no_pg leaves AGENT_PG_DSN unset, so
+# init creates a cluster and fails where the suite only has AGENT_TEST_PG.
+def test_claim_done_reads_the_live_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from agent_cli.pr_guard_config import PrGuardLookupError
+    from test_allow import _ready_task
+
+    run(tmp_path, ["init"])
+    run(
+        tmp_path,
+        [
+            "session",
+            "register",
+            "--id",
+            "sess-1",
+            "--kind",
+            "human",
+            "--skill",
+            "spine",
+        ],
+    )
+    capsys.readouterr()
+    run(
+        tmp_path,
+        [
+            "task",
+            "create",
+            "--session",
+            "sess-1",
+            "--workflow",
+            "implement",
+            "--title",
+            "Ship",
+        ],
+    )
+    tid = _last_task_id(capsys.readouterr().out)
+    snap = _ready_task(session_id="sess-1")
+    snap["id"] = tid
+    snap["checklist"]["codex_pr_quality"] = "n_a"
+    snap["checklist"]["codex_pr_logic"] = "n_a"
+    snap["checklist_evidence"] = {
+        "codex_pr_quality": "second review not posted",
+        "codex_pr_logic": "second review not posted",
+    }
+    snap["gates"] = [gate for gate in snap["gates"] if gate["stage"] == "grok-pr"]
+
+    def load_snaps(_store: object, _session_id: str) -> list[dict]:
+        fresh = dict(snap)
+        fresh["checklist"] = dict(snap["checklist"])
+        fresh["checklist_evidence"] = dict(snap["checklist_evidence"])
+        fresh["gates"] = list(snap["gates"])
+        fresh["pull_opener"] = ""
+        fresh["trusted_pr_guard"] = None
+        return [fresh]
+
+    monkeypatch.setattr("agent_cli.main.load_session_tasks", load_snaps)
+
+    def listed(_store: object, _task: dict) -> tuple[str, dict | None]:
+        return "alice", {"one_review_authors": ["alice"]}
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", listed)
+    run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
+    assert "allow action=claim-done" in capsys.readouterr().out
+
+    def missing_list(_store: object, _task: dict) -> tuple[str, dict | None]:
+        return "alice", None
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", missing_list)
+    with pytest.raises(SystemExit):
+        run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
+    denied = capsys.readouterr()
+    assert "codex_pr_quality=n_a" in f"{denied.out}\n{denied.err}"
+
+    def down(_store: object, _task: dict) -> tuple[str, dict | None]:
+        raise PrGuardLookupError("down")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", down)
+    with pytest.raises(SystemExit, match="trusted review list could not be read"):
+        run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
+
+
+def test_pr_ready_does_not_read_the_trusted_review_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom(_store: object, _task: dict) -> tuple[str, dict | None]:
+        raise AssertionError("live read")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", boom)
+    run(tmp_path, ["init"])
+    run(
+        tmp_path,
+        [
+            "session",
+            "register",
+            "--id",
+            "sess-1",
+            "--kind",
+            "human",
+            "--skill",
+            "spine",
+        ],
+    )
+    capsys.readouterr()
+    run(
+        tmp_path,
+        [
+            "task",
+            "create",
+            "--session",
+            "sess-1",
+            "--workflow",
+            "implement",
+            "--title",
+            "Ship",
+        ],
+    )
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        run(tmp_path, ["allow", "--action", "pr-ready", "--session", "sess-1"])
+    with pytest.raises(SystemExit):
+        run(tmp_path, ["allow", "--action", "claim-done", "--session", "sess-1"])
+
+
+@pytest.mark.no_pg
+def test_terminal_task_does_not_read_the_trusted_review_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_cli.main import _attach_live_one_review
+
+    def boom(_store: object, _task: dict) -> tuple[str, dict | None]:
+        raise AssertionError("live read")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", boom)
+    snap = {
+        "id": "done-task",
+        "state": "done",
+        "checklist": {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        "checklist_evidence": {
+            "codex_pr_quality": "second review not posted",
+            "codex_pr_logic": "second review not posted",
+        },
+    }
+    _attach_live_one_review(object(), snap)
+    assert "pull_opener" not in snap
+
+
+@pytest.mark.no_pg
+def test_wrong_evidence_does_not_read_the_trusted_review_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_cli.main import _attach_live_one_review
+
+    def boom(_store: object, _task: dict) -> tuple[str, dict | None]:
+        raise AssertionError("live read")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", boom)
+
+    class RowStore:
+        def row(self, table: str, row_id: str) -> dict:
+            assert table == "task"
+            return {"id": row_id}
+
+    snap = {
+        "id": "open-task",
+        "state": "pr-review",
+        "checklist": {"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        "checklist_evidence": {
+            "codex_pr_quality": "seed",
+            "codex_pr_logic": "second review not posted",
+        },
+    }
+    _attach_live_one_review(RowStore(), snap)
+    assert snap["pull_opener"] == ""
+    assert snap["trusted_pr_guard"] is None
+
+
+def test_load_task_dict_does_not_read_the_trusted_review_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(_store: object, _task: dict) -> tuple[str, dict | None]:
+        raise AssertionError("live read")
+
+    monkeypatch.setattr("agent_cli.main._live_one_review", boom)
+
+    class LocalStore:
+        def row(self, table: str, row_id: str) -> dict | None:
+            assert (table, row_id) == ("task", "task-1")
+            return {
+                "id": "task-1",
+                "payload": {
+                    "one_review_author": {
+                        "pull_opener": "alice",
+                        "trusted_pr_guard": {"one_review_authors": ["alice"]},
+                    }
+                },
+            }
+
+        def rows(self, table: str) -> list[dict]:
+            if table == "checklist_item":
+                return [
+                    {"task_id": "task-1", "key": "codex_pr_quality", "status": "n_a"},
+                    {"task_id": "task-1", "key": "codex_pr_logic", "status": "n_a"},
+                ]
+            if table in ("local_check", "review_gate"):
+                return []
+            raise AssertionError(table)
+
+    snap = load_task_dict(LocalStore(), "task-1")
+    assert snap["pull_opener"] == ""
+    assert snap["trusted_pr_guard"] is None
+
+
+class _Home:
+    def __init__(self, home: Path) -> None:
+        self.home = home
+
+
+def _bind_account(home: Path) -> None:
+    (home / "github-accounts.json").write_text(
+        json.dumps({
+            "accounts": {
+                "one": {"login": "WorkerOne", "gh_config_dir": "/accounts/one"},
+            },
+            "sessions": {"sess-1": "one"},
+        }),
+        encoding="utf-8",
+    )
+
+
+def _review_task() -> dict:
+    return {"session_id": "sess-1", "repo": "owner/repo", "ref": "7"}
+
+
+@pytest.mark.no_pg
+def test_live_one_review_missing_account_does_not_use_ambient_gh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent_cli.main import _live_one_review
+
+    def ambient(argv: list[str], cwd: str | None = None):
+        raise AssertionError(argv)
+
+    monkeypatch.setattr("agent_cli.main._exec_argv", ambient)
+    with pytest.raises(SystemExit, match="No GitHub account configured"):
+        _live_one_review(_Home(tmp_path), _review_task())
+
+
+@pytest.mark.no_pg
+def test_live_one_review_login_mismatch_does_not_read_the_pull(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent_cli.main import _live_one_review
+    from agent_cli.runtime import Completed
+
+    _bind_account(tmp_path)
+    seen: list[list[str]] = []
+
+    def ambient(argv: list[str], cwd: str | None = None) -> Completed:
+        seen.append(list(argv))
+        gh = argv[argv.index("gh"):]
+        if gh[:4] == ["gh", "api", "user", "--jq"]:
+            return Completed(0, "OtherUser\n", "")
+        raise AssertionError(gh)
+
+    monkeypatch.setattr("agent_cli.main._exec_argv", ambient)
+    with pytest.raises(SystemExit, match="does not match"):
+        _live_one_review(_Home(tmp_path), _review_task())
+    assert seen
+    assert all("GH_CONFIG_DIR=/accounts/one" in argv for argv in seen)
+    assert all(argv[0] != "gh" for argv in seen)
+
+
+@pytest.mark.no_pg
+def test_live_one_review_uses_the_session_account_for_both_calls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent_cli.main import _live_one_review
+    from agent_cli.runtime import Completed
+
+    _bind_account(tmp_path)
+    sha = "ab" * 20
+    guard = json.dumps({
+        "schema": "pr-guard/v1",
+        "a38": {"enforce": [], "exclude": [], "default": "enforce"},
+        "one_review_authors": ["alice"],
+    })
+    seen: list[list[str]] = []
+
+    def ambient(argv: list[str], cwd: str | None = None) -> Completed:
+        seen.append(list(argv))
+        assert "GH_CONFIG_DIR=/accounts/one" in argv
+        assert argv[0] != "gh"
+        gh = argv[argv.index("gh"):]
+        if gh[:4] == ["gh", "api", "user", "--jq"]:
+            return Completed(0, "WorkerOne\n", "")
+        if gh[:3] == ["gh", "pr", "view"]:
+            return Completed(0, json.dumps({"author": {"login": "alice"}}), "")
+        if gh == ["gh", "api", "repos/owner/repo"]:
+            return Completed(0, json.dumps({"default_branch": "develop"}), "")
+        if gh == ["gh", "api", "repos/owner/repo/commits/develop"]:
+            return Completed(0, json.dumps({"sha": sha}), "")
+        if gh[:2] == ["gh", "api"] and "contents/.github/pr-guard.json" in gh[-1]:
+            return Completed(0, guard, "")
+        raise AssertionError(gh)
+
+    monkeypatch.setattr("agent_cli.main._exec_argv", ambient)
+    login, config = _live_one_review(_Home(tmp_path), _review_task())
+    assert login == "alice"
+    assert config is not None
+    assert config["one_review_authors"] == ["alice"]
+    tails = [argv[argv.index("gh"):] for argv in seen]
+    assert any(tail[:3] == ["gh", "pr", "view"] for tail in tails)
+    assert any("contents/.github/pr-guard.json" in tail[-1] for tail in tails)
+
+
+def test_task_repo_and_pr_uses_the_pull_target_not_the_push_remote() -> None:
+    from agent_cli.main import _task_repo_and_pr
+
+    repo, number = _task_repo_and_pr({
+        "repo": "ignored/task-repo",
+        "ref": "12",
+        "payload": {
+            "coordinator": {
+                "publication_repo": "fork/widget",
+                "pr_number": 34,
+                "source": {"repo": "acme/widget"},
+            }
+        },
+    })
+    assert repo == "acme/widget"
+    assert number == "34"
+
+    fallback_repo, fallback_number = _task_repo_and_pr({
+        "repo": "acme/widget",
+        "ref": "12",
+        "payload": {"coordinator": {"publication_repo": "fork/widget"}},
+    })
+    assert fallback_repo == "acme/widget"
+    assert fallback_number == "12"
+
+
 def test_session_task_checklist_status(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     run(tmp_path, ["init"])
     run(tmp_path, ["session", "register", "--id", "sess-1", "--kind", "human", "--skill", "spine", "--skill", "review-loop", "--skill", "pr-review"])

@@ -474,8 +474,191 @@ def test_human_merge_only_completion(tmp_path: Path, monkeypatch: pytest.MonkeyP
     tick(store, worker, runner=fake, lane_runner=lane_runner(fake))
     task = store.row("task", tid)
     assert task["state"] == "done"
+    merged = [row for row in store.rows("activity") if row.get("type") == "pr.merged"]
+    assert merged and merged[0]["payload"]["merged_by"] == "human-owner"
     assert any(r.get("type") == "pr.merged" for r in store.rows("activity"))
     assert any(r.get("type") == "issue.assigned.ack" for r in store.rows("activity"))
+
+
+def _seed_one_review_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    tid: str,
+    stored_login: str,
+) -> tuple[Any, Any, FakeGh]:
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    fake = FakeGh()
+    patch_account_runners(monkeypatch, fake)
+    patch_execute_github(monkeypatch)
+    seed_task(
+        store,
+        worker,
+        tid,
+        {
+            "id": tid,
+            "session_id": "worker-session",
+            "workflow": "implement",
+            "title": "t",
+            "repo": "example/project",
+            "ref": "42",
+            "payload": {
+                "one_review_author": {
+                    "pull_opener": stored_login,
+                    "trusted_pr_guard": {"one_review_authors": [stored_login]},
+                },
+                "coordinator": {
+                    "phase": "await_merge",
+                    "source": {
+                        "repo": "example/project",
+                        "number": 7,
+                        "assigned_id": "assigned-1",
+                        "publication_repo": "example/project",
+                        "base": "develop",
+                        "title": "Fix",
+                    },
+                    "pr_number": 42,
+                    "publication_repo": "example/project",
+                    "head_sha": fake.head,
+                    "worktree": str(worker.workspace_root / tid),
+                    "evidence": {"ready_head": fake.head},
+                },
+            },
+            "state": "pr-review",
+            "current_round": 1,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "change_summary_en": "Implemented example/project#7.",
+            "change_summary_de": "Umsetzung von example/project#7.",
+        },
+    )
+    from agent_cli.allow import CHECKLIST_KEYS
+
+    for key in CHECKLIST_KEYS["implement"]:
+        if key in ("codex_pr_quality", "codex_pr_logic"):
+            status, evidence = "n_a", "second review not posted"
+        elif key in ("deviation_declared", "deviation_granted"):
+            status, evidence = "n_a", "seed"
+        else:
+            status, evidence = "ja", "seed"
+        store.write(
+            "checklist_item",
+            "insert",
+            f"{tid}-{key}",
+            {
+                "id": f"{tid}-{key}",
+                "task_id": tid,
+                "key": key,
+                "status": status,
+                "evidence": evidence,
+                "source": "human" if key in ("spec_written", "deviation_declared", "deviation_granted") else "script",
+                "deviation_declared": False,
+                "deviation_granted": False,
+                "granted_by": None,
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+        )
+    for dim in ("quality", "logic"):
+        store.write(
+            "review_gate",
+            "insert",
+            f"{tid}-grok-{dim}",
+            {
+                "id": f"{tid}-grok-{dim}",
+                "task_id": tid,
+                "stage": "grok-pr",
+                "dimension": dim,
+                "vendor": "grok",
+                "verdict": "approved",
+                "evidence": None,
+                "head_sha": fake.head,
+                "agent_id": "a",
+                "recorded_at": "2026-01-01T00:00:00Z",
+            },
+        )
+    store.write(
+        "local_check",
+        "insert",
+        f"{tid}-lc",
+        {
+            "id": f"{tid}-lc",
+            "task_id": tid,
+            "name": "coordinator-check",
+            "command": "/operator/checks",
+            "result": "pass",
+            "output": "ok",
+            "ran_at": "2026-01-01T00:00:00Z",
+            "head_sha": fake.head,
+        },
+    )
+    fake.pr["state"] = "MERGED"
+    fake.pr["mergedAt"] = "2026-09-01T12:00:00Z"
+    fake.pr["mergeCommit"] = {"oid": "dddddddddddddddddddddddddddddddddddddddd"}
+    fake.pr["mergedBy"] = {"login": "human-owner", "type": "User"}
+    return store, worker, fake
+
+
+def test_human_merge_done_reads_the_live_one_review_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _seed_one_review_merge(
+        tmp_path,
+        monkeypatch,
+        tid="55555555-5555-4555-8555-555555555551",
+        stored_login="alice",
+    )
+    _list_opener(fake, "worker-bot")
+    tick(store, worker, runner=fake, lane_runner=lane_runner(fake))
+    task = store.row("task", "55555555-5555-4555-8555-555555555551")
+    assert task is not None and task["state"] == "done"
+    merged = [row for row in store.rows("activity") if row.get("type") == "pr.merged"]
+    assert merged and merged[0]["payload"]["merged_by"] == "human-owner"
+
+
+def test_human_merge_stays_blocked_when_the_trusted_file_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _seed_one_review_merge(
+        tmp_path,
+        monkeypatch,
+        tid="55555555-5555-4555-8555-555555555552",
+        stored_login="worker-bot",
+    )
+    lines = tick(store, worker, runner=fake, lane_runner=lane_runner(fake))
+    task = store.row("task", "55555555-5555-4555-8555-555555555552")
+    assert task is not None and task["state"] != "done"
+    assert any("task-done blocked" in line for line in lines)
+    assert not any(row.get("type") == "pr.merged" for row in store.rows("activity"))
+
+
+def test_human_merge_retries_when_the_trusted_list_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _seed_one_review_merge(
+        tmp_path,
+        monkeypatch,
+        tid="55555555-5555-4555-8555-555555555553",
+        stored_login="alice",
+    )
+    _list_opener(fake, "worker-bot")
+
+    def boom(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        from agent_cli.pr_guard_config import PrGuardLookupError
+
+        raise PrGuardLookupError("down")
+
+    monkeypatch.setattr("agent_cli.coordinator_github.fetch_trusted_pr_guard", boom)
+    lines = tick(store, worker, runner=fake, lane_runner=lane_runner(fake))
+    task = store.row("task", "55555555-5555-4555-8555-555555555553")
+    assert task is not None and task["state"] != "done"
+    assert any("trusted review list could not be read" in line for line in lines)
+    merged = [row for row in store.rows("activity") if row.get("type") == "pr.merged"]
+    assert merged and merged[0]["payload"]["merged_by"] == "human-owner"
+    assert not any(row.get("type") == "issue.assigned.ack" for row in store.rows("activity"))
 
 
 def test_merge_missing_type_is_not_human(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2087,7 +2270,11 @@ def _seed_ready_side_task(
                 "task_id": tid,
                 "key": key,
                 "status": status,
-                "evidence": "seed",
+                "evidence": (
+                    "second review not posted"
+                    if status == "n_a" and key in ("codex_pr_quality", "codex_pr_logic")
+                    else "seed"
+                ),
                 "source": "human" if key in ("spec_written", "deviation_declared", "deviation_granted") else "script",
                 "deviation_declared": False,
                 "deviation_granted": False,
@@ -2150,10 +2337,21 @@ def _seed_ready_side_task(
     return task
 
 
-def test_readiness_skips_codex_pr_when_both_checklist_na(
+def _list_opener(fake: FakeGh, login: str = "worker-bot") -> None:
+    fake.pr_guard_body = json.dumps(
+        {
+            "schema": "pr-guard/v1",
+            "a38": {"enforce": [], "exclude": [], "default": "enforce"},
+            "one_review_authors": [login],
+        }
+    )
+
+
+def test_readiness_skips_codex_pr_when_opener_is_listed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, worker, fake = _ready_side_env(tmp_path, monkeypatch)
+    _list_opener(fake)
     tid = "aa000001-0000-4000-8000-000000000001"
     task = _seed_ready_side_task(
         store,
@@ -2166,6 +2364,23 @@ def test_readiness_skips_codex_pr_when_both_checklist_na(
     lines = phase_readiness(store, worker, task, fake)
     assert any(f"readiness ok on {fake.head[:7]}" in line for line in lines)
     assert not any("missing approved gate codex-pr/" in line for line in lines)
+
+
+def test_readiness_requires_codex_pr_when_file_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _ready_side_env(tmp_path, monkeypatch)
+    tid = "aa000001-0000-4000-8000-000000000001"
+    task = _seed_ready_side_task(
+        store,
+        worker,
+        fake,
+        tid=tid,
+        phase="readiness",
+        checklist_codex={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+    )
+    with pytest.raises(CoordinatorError, match="missing approved gate codex-pr/"):
+        phase_readiness(store, worker, task, fake)
 
 
 def test_readiness_still_requires_grok_pr_when_codex_checklist_na(
@@ -2255,10 +2470,11 @@ def test_readiness_requires_codex_pr_when_unavailable_with_na(
         phase_readiness(store, worker, task, fake)
 
 
-def test_formal_approve_skips_codex_pr_when_both_checklist_na(
+def test_formal_approve_skips_codex_pr_when_opener_is_listed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, worker, fake = _ready_side_env(tmp_path, monkeypatch, patch_github=True)
+    _list_opener(fake)
     tid = "aa000001-0000-4000-8000-000000000041"
     task = _seed_ready_side_task(
         store,
@@ -2277,10 +2493,30 @@ def test_formal_approve_skips_codex_pr_when_both_checklist_na(
     )
 
 
-def test_leave_draft_skips_codex_pr_when_both_checklist_na(
+@pytest.mark.no_pg
+def test_leave_draft_comment_names_one_run_only_for_the_exception() -> None:
+    from agent_cli.coordinator_github import _leave_draft_comment
+
+    head = "abcdef0" + ("1" * 33)
+    one = _leave_draft_comment(head, one_review=True)
+    two = _leave_draft_comment(head, one_review=False)
+    assert "one review run is approved" in one
+    assert "two review runs are required and approved" not in one
+    assert "One review is enough only when the pull request opener is listed in one_review_authors" in one
+    assert "A missing file, a missing key, or an empty list keeps two reviews required." in one
+    assert "An entry that exists only on the pull request head does not count." in one
+    assert "two review runs are required and approved" in two
+    assert "and CI green." in two
+    assert "one review run is approved" not in two
+    assert "Still not merge; a human merges." in one
+    assert "Still not merge; a human merges." in two
+
+
+def test_leave_draft_skips_codex_pr_when_opener_is_listed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, worker, fake = _ready_side_env(tmp_path, monkeypatch, patch_github=True)
+    _list_opener(fake)
     tid = "aa000001-0000-4000-8000-000000000051"
     task = _seed_ready_side_task(
         store,
@@ -2298,6 +2534,139 @@ def test_leave_draft_skips_codex_pr_when_both_checklist_na(
     lines = phase_leave_draft(store, worker, task, fake)
     assert not any("missing approved gate codex-pr/" in line for line in lines)
     assert any("left draft" in line for line in lines)
+    assert fake.ready_calls == 1
+
+
+def test_leave_draft_does_not_ready_when_the_exception_is_revoked_after_the_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _ready_side_env(tmp_path, monkeypatch, patch_github=True)
+    _list_opener(fake)
+    fake.revoke_one_review_on_pr_comment = True
+    from agent_cli import coordinator_github
+
+    marked = coordinator_github.execute_github
+
+    def deliver_then_mark(store, runner, *, activity_ids):  # noqa: ANN001
+        for aid in activity_ids:
+            row = store.row("activity", aid) or {}
+            if row.get("type") != "comment.post" or row.get("execution_status") != "pending":
+                continue
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            fake(
+                [
+                    "gh",
+                    "pr",
+                    "comment",
+                    str(payload.get("number") or 42),
+                    "--repo",
+                    str(payload.get("repo") or "example/project"),
+                    "--body",
+                    str(payload.get("body") or ""),
+                ]
+            )
+        return marked(store, runner, activity_ids=activity_ids)
+
+    monkeypatch.setattr(coordinator_github, "execute_github", deliver_then_mark)
+    tid = "aa000001-0000-4000-8000-000000000052"
+    task = _seed_ready_side_task(
+        store,
+        worker,
+        fake,
+        tid=tid,
+        phase="leave_draft",
+        checklist_codex={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        seed_formal_review=True,
+        extra_evidence={
+            "formal_head": fake.head,
+            "readiness_head": fake.head,
+        },
+    )
+    with pytest.raises(
+        CoordinatorError,
+        match="one-review exception revoked before leave-draft",
+    ):
+        phase_leave_draft(store, worker, task, fake)
+    assert fake.ready_calls == 0
+    assert fake.pr["isDraft"] is True
+    bodies = "\n".join(str(comment.get("body") or "") for comment in fake.pr_comments)
+    assert "one review run is approved" in bodies
+    assert "The one-review exception was no longer present" in bodies
+    assert "Two review runs are required." in bodies
+
+
+def test_leave_draft_posts_the_revoked_comment_on_a_later_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, worker, fake = _ready_side_env(tmp_path, monkeypatch, patch_github=True)
+    _list_opener(fake)
+    fake.fail_pr_guard_after_comment = True
+    from agent_cli import coordinator_github
+
+    marked = coordinator_github.execute_github
+
+    def deliver_then_mark(store, runner, *, activity_ids):  # noqa: ANN001
+        for aid in activity_ids:
+            row = store.row("activity", aid) or {}
+            if row.get("type") != "comment.post" or row.get("execution_status") != "pending":
+                continue
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            fake(
+                [
+                    "gh",
+                    "pr",
+                    "comment",
+                    str(payload.get("number") or 42),
+                    "--repo",
+                    str(payload.get("repo") or "example/project"),
+                    "--body",
+                    str(payload.get("body") or ""),
+                ]
+            )
+        return marked(store, runner, activity_ids=activity_ids)
+
+    monkeypatch.setattr(coordinator_github, "execute_github", deliver_then_mark)
+    tid = "aa000001-0000-4000-8000-000000000053"
+    task = _seed_ready_side_task(
+        store,
+        worker,
+        fake,
+        tid=tid,
+        phase="leave_draft",
+        checklist_codex={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+        seed_formal_review=True,
+        extra_evidence={
+            "formal_head": fake.head,
+            "readiness_head": fake.head,
+        },
+    )
+    lines = phase_leave_draft(store, worker, task, fake)
+    assert fake.ready_calls == 0
+    assert any("temporarily unavailable" in line for line in lines)
+    bodies = "\n".join(str(comment.get("body") or "") for comment in fake.pr_comments)
+    assert "one review run is approved" in bodies
+    assert "The one-review exception was no longer present" not in bodies
+
+    fake.pr_guard_body = json.dumps(
+        {
+            "schema": "pr-guard/v1",
+            "a38": {"enforce": [], "exclude": [], "default": "enforce"},
+            "one_review_authors": [],
+        }
+    )
+    task = store.row("task", tid)
+    assert task is not None
+    with pytest.raises(
+        CoordinatorError,
+        match="one-review exception revoked before leave-draft",
+    ):
+        phase_leave_draft(store, worker, task, fake)
+    assert fake.ready_calls == 0
+    assert fake.pr["isDraft"] is True
+    bodies = "\n".join(str(comment.get("body") or "") for comment in fake.pr_comments)
+    assert "one review run is approved" in bodies
+    assert "The one-review exception was no longer present" in bodies
+    assert "Two review runs are required." in bodies
 
 
 def test_readiness_accepts_approved_codex_pr_when_checklist_not_both_na(
@@ -2316,6 +2685,313 @@ def test_readiness_accepts_approved_codex_pr_when_checklist_not_both_na(
     )
     lines = phase_readiness(store, worker, task, fake)
     assert any(f"readiness ok on {fake.head[:7]}" in line for line in lines)
+
+
+_POSTED_HEAD = "c" * 40
+
+
+def _seed_posted_codex_task(store, worker, tid: str, *, codex_dims: tuple[str, ...], codex_status: dict[str, str]) -> dict:
+    """Review task whose Codex checklist is n_a unless a test overrides it."""
+    from agent_cli.allow import CHECKLIST_KEYS
+
+    seed_task(
+        store,
+        worker,
+        tid,
+        {
+            "id": tid,
+            "session_id": "worker-session",
+            "workflow": "review",
+            "title": "Review",
+            "repo": "example/project",
+            "ref": None,
+            "payload": {
+                "coordinator": {
+                    "phase": "pr_gates_codex",
+                    "worktree": str(worker.workspace_root / tid),
+                    "base_sha": "b" * 40,
+                    "head_sha": _POSTED_HEAD,
+                    "source": {
+                        "repo": "example/project",
+                        "number": 7,
+                        "assigned_id": "a-posted",
+                        "publication_repo": "example/project",
+                        "base": "develop",
+                        "title": "Review",
+                    },
+                }
+            },
+            "state": "pr-review",
+            "current_round": 1,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "change_summary_en": "Reviewed.",
+            "change_summary_de": "Geprüft.",
+        },
+    )
+    before = {
+        "session_registered",
+        "contributing_read",
+        "grok_pr_quality",
+        "grok_pr_logic",
+    }
+    for key in CHECKLIST_KEYS["review"]:
+        if key in codex_status:
+            status, evidence = codex_status[key], "second review not posted"
+        elif key in before:
+            status, evidence = "ja", "seed"
+        else:
+            status, evidence = "pending", None
+        cid = f"{tid}-{key}"
+        store.write(
+            "checklist_item",
+            "insert",
+            cid,
+            {
+                "id": cid,
+                "task_id": tid,
+                "key": key,
+                "status": status,
+                "evidence": evidence,
+                "source": "script",
+                "deviation_declared": False,
+                "deviation_granted": False,
+                "granted_by": None,
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+        )
+    for stage, dim, vendor in (
+        ("grok-pr", "quality", "grok"),
+        ("grok-pr", "logic", "grok"),
+    ):
+        gid = f"{tid}-{stage}-{dim}"
+        store.write(
+            "review_gate",
+            "insert",
+            gid,
+            {
+                "id": gid,
+                "task_id": tid,
+                "stage": stage,
+                "dimension": dim,
+                "vendor": vendor,
+                "verdict": "approved",
+                "evidence": None,
+                "head_sha": _POSTED_HEAD,
+                "agent_id": f"{tid}-agent-{dim}",
+                "recorded_at": "2026-01-01T00:00:00Z",
+            },
+        )
+    for dim in codex_dims:
+        gid = f"{tid}-codex-pr-{dim}"
+        store.write(
+            "review_gate",
+            "insert",
+            gid,
+            {
+                "id": gid,
+                "task_id": tid,
+                "stage": "codex-pr",
+                "dimension": dim,
+                "vendor": "codex",
+                "verdict": "approved",
+                "evidence": None,
+                "head_sha": _POSTED_HEAD,
+                "agent_id": f"{tid}-codex-{dim}",
+                "recorded_at": "2026-01-01T00:00:01Z",
+            },
+        )
+    task = store.row("task", tid)
+    assert task is not None
+    return task
+
+
+def _checklist_status(store, tid: str) -> dict[str, str]:
+    return {
+        str(row.get("key")): str(row.get("status"))
+        for row in store.rows("checklist_item")
+        if row.get("task_id") == tid
+    }
+
+
+def _patch_pr_gate_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fake_diff(store, worker, task, runner, *, head):  # noqa: ANN001
+        path = tmp_path / f"review-{head[:12]}.patch"
+        path.write_text("diff\n", encoding="utf-8")
+        path.with_suffix(".excerpt.txt").write_text("excerpt\n", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(
+        "agent_cli.coordinator_lanes.verify_checkout_identity",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "agent_cli.coordinator_lanes.verify_signed_clean_head",
+        lambda *args, **kwargs: _POSTED_HEAD,
+    )
+    monkeypatch.setattr("agent_cli.coordinator_lanes.write_review_diff", fake_diff)
+    monkeypatch.setattr(
+        "agent_cli.coordinator_lanes.write_review_context",
+        lambda *args, **kwargs: "",
+    )
+
+
+def test_approved_codex_stage_replaces_n_a_on_a_later_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both gates already approved still write ja and do not start another lane."""
+    from agent_cli.coordinator_lanes import phase_pr_gates
+
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    tid = "aa000001-0000-4000-8000-000000000054"
+    task = _seed_posted_codex_task(
+        store,
+        worker,
+        tid,
+        codex_dims=("quality", "logic"),
+        codex_status={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+    )
+    _patch_pr_gate_git(monkeypatch, tmp_path)
+    launched: list[str] = []
+
+    def run(argv, stdin=None):  # noqa: ANN001
+        launched.append("lane")
+        return Completed(0, "STATUS: complete\nRESULT: approved\n", "")
+
+    lines = phase_pr_gates(
+        store, worker, task, lambda argv: Completed(0, "", ""), run, vendor="codex", stage="codex-pr"
+    )
+    assert launched == []
+    assert any("already complete" in line for line in lines)
+    status = _checklist_status(store, tid)
+    assert status["codex_pr_quality"] == "ja"
+    assert status["codex_pr_logic"] == "ja"
+    saved = store.row("task", tid)
+    assert saved["payload"]["coordinator"]["phase"] == "ci"
+    assert saved["payload"]["coordinator"].get("phase") != "blocked"
+
+
+def test_cached_codex_dimension_replaces_n_a_while_the_other_lane_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An approved dimension cached on retry still moves n_a to ja. The other lane starts."""
+    from agent_cli.coordinator_lanes import phase_pr_gates
+
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    tid = "aa000001-0000-4000-8000-000000000055"
+    task = _seed_posted_codex_task(
+        store,
+        worker,
+        tid,
+        codex_dims=("quality",),
+        codex_status={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+    )
+    _patch_pr_gate_git(monkeypatch, tmp_path)
+    launched: list[str] = []
+
+    def run(argv, stdin=None):  # noqa: ANN001
+        text = " ".join(str(part) for part in argv) + "\n" + (stdin or "")
+        for name in ("pr-reviewer-quality", "pr-reviewer-logic"):
+            if name in text:
+                launched.append(name)
+                break
+        return Completed(0, "STATUS: complete\nRESULT: approved\n", "")
+
+    lines = phase_pr_gates(
+        store, worker, task, lambda argv: Completed(0, "", ""), run, vendor="codex", stage="codex-pr"
+    )
+    assert launched == ["pr-reviewer-logic"]
+    assert any("cached" in line for line in lines)
+    assert any("logic=approved" in line for line in lines)
+    status = _checklist_status(store, tid)
+    assert status["codex_pr_quality"] == "ja"
+    assert status["codex_pr_logic"] == "ja"
+    saved = store.row("task", tid)
+    assert saved["payload"]["coordinator"]["phase"] == "ci"
+
+
+def test_codex_lanes_still_start_when_the_checklist_is_n_a(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one-review checklist does not skip the Codex lane."""
+    from agent_cli.coordinator_lanes import phase_pr_gates
+
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    tid = "aa000001-0000-4000-8000-000000000056"
+    task = _seed_posted_codex_task(
+        store,
+        worker,
+        tid,
+        codex_dims=(),
+        codex_status={"codex_pr_quality": "n_a", "codex_pr_logic": "n_a"},
+    )
+    _patch_pr_gate_git(monkeypatch, tmp_path)
+    launched: list[str] = []
+
+    def run(argv, stdin=None):  # noqa: ANN001
+        text = " ".join(str(part) for part in argv) + "\n" + (stdin or "")
+        for name in ("pr-reviewer-quality", "pr-reviewer-logic"):
+            if name in text:
+                launched.append(name)
+                break
+        return Completed(0, "STATUS: complete\nRESULT: approved\n", "")
+
+    phase_pr_gates(
+        store, worker, task, lambda argv: Completed(0, "", ""), run, vendor="codex", stage="codex-pr"
+    )
+    assert set(launched) == {"pr-reviewer-quality", "pr-reviewer-logic"}
+    status = _checklist_status(store, tid)
+    assert status["codex_pr_quality"] == "ja"
+    assert status["codex_pr_logic"] == "ja"
+
+
+def test_approved_retry_does_not_promote_a_pending_codex_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only n_a is replaced. A pending key does not turn the early return into a block."""
+    from agent_cli.coordinator_lanes import phase_pr_gates
+
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    tid = "aa000001-0000-4000-8000-000000000057"
+    task = _seed_posted_codex_task(
+        store,
+        worker,
+        tid,
+        codex_dims=("quality", "logic"),
+        codex_status={"codex_pr_quality": "pending", "codex_pr_logic": "n_a"},
+    )
+    _patch_pr_gate_git(monkeypatch, tmp_path)
+    lines = phase_pr_gates(
+        store,
+        worker,
+        task,
+        lambda argv: Completed(0, "", ""),
+        None,
+        vendor="codex",
+        stage="codex-pr",
+    )
+    assert any("already complete" in line for line in lines)
+    status = _checklist_status(store, tid)
+    assert status["codex_pr_quality"] == "pending"
+    assert status["codex_pr_logic"] == "ja"
+    saved = store.row("task", tid)
+    assert saved["payload"]["coordinator"]["phase"] == "ci"
 
 
 def test_pr_review_scope_keeps_the_compliance_reminder_and_states_a_missing_issue_is_not_a_defect() -> None:

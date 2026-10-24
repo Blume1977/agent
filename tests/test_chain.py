@@ -462,7 +462,25 @@ class TestCloseAllowed(unittest.TestCase):
         cl["contributing_read"] = "ja"
         cl["grok_pr_quality"] = "ja"
         cl["grok_pr_logic"] = "ja"
+        listed = {
+            "pull_opener": "alice",
+            "trusted_pr_guard": {
+                "schema": "pr-guard/v1",
+                "a38": {"enforce": [], "exclude": [], "default": "enforce"},
+                "one_review_authors": ["alice"],
+            },
+        }
         allowed = close_allowed(
+            "review",
+            "codex_pr_quality",
+            checklist=cl,
+            source="script",
+            evidence="second review not posted",
+            snapshot=listed,
+            status="n_a",
+        )
+        self.assertTrue(allowed.allowed)
+        denied_standard = close_allowed(
             "review",
             "codex_pr_quality",
             checklist=cl,
@@ -471,7 +489,7 @@ class TestCloseAllowed(unittest.TestCase):
             snapshot={},
             status="n_a",
         )
-        self.assertTrue(allowed.allowed)
+        self.assertFalse(denied_standard.allowed)
         denied = close_allowed(
             "review",
             "codex_pr_quality",
@@ -520,6 +538,99 @@ class TestCloseAllowed(unittest.TestCase):
         self.assertFalse(_satisfied("codex_pr_logic", cl))
         nxt = {s.key for s in next_steps("resolve-conflicts", cl)}
         self.assertNotIn("mergeable", nxt)
+
+    def test_posted_codex_review_replaces_n_a_with_ja(self) -> None:
+        cl = _pending("review")
+        for key in (
+            "session_registered",
+            "contributing_read",
+            "grok_pr_quality",
+            "grok_pr_logic",
+        ):
+            cl[key] = "ja"
+        cl["codex_pr_quality"] = "n_a"
+        cl["codex_pr_logic"] = "n_a"
+        snap = {
+            "gates": [
+                {
+                    "stage": "codex-pr",
+                    "dimension": "quality",
+                    "vendor": "codex",
+                    "verdict": "approved",
+                },
+                {
+                    "stage": "codex-pr",
+                    "dimension": "logic",
+                    "vendor": "codex",
+                    "verdict": "approved",
+                },
+            ]
+        }
+        for key, dim in (("codex_pr_quality", "quality"), ("codex_pr_logic", "logic")):
+            verdict = close_allowed(
+                "review",
+                key,
+                checklist=cl,
+                source="script",
+                evidence=f"codex-pr/{dim} on head",
+                snapshot=snap,
+                status="ja",
+            )
+            self.assertTrue(verdict.allowed, verdict.reason)
+        empty = close_allowed(
+            "review",
+            "codex_pr_quality",
+            checklist=cl,
+            source="script",
+            evidence="  ",
+            snapshot=snap,
+            status="ja",
+        )
+        self.assertFalse(empty.allowed)
+        self.assertIn("evidence", empty.reason)
+        wrong_source = close_allowed(
+            "review",
+            "codex_pr_quality",
+            checklist=cl,
+            source="human",
+            evidence="posted",
+            snapshot=snap,
+            status="ja",
+        )
+        self.assertFalse(wrong_source.allowed)
+        missing_gate = close_allowed(
+            "review",
+            "codex_pr_quality",
+            checklist=cl,
+            source="script",
+            evidence="posted",
+            snapshot={"gates": []},
+            status="ja",
+        )
+        self.assertFalse(missing_gate.allowed)
+        self.assertIn("not approved", missing_gate.reason)
+        grok = dict(cl)
+        grok["grok_pr_quality"] = "n_a"
+        denied = close_allowed(
+            "review",
+            "grok_pr_quality",
+            checklist=grok,
+            source="script",
+            evidence="posted",
+            snapshot={
+                "gates": [
+                    {
+                        "stage": "grok-pr",
+                        "dimension": "quality",
+                        "vendor": "grok",
+                        "verdict": "approved",
+                    }
+                ]
+            },
+            status="ja",
+        )
+        self.assertFalse(denied.allowed)
+        self.assertIn("not the next step", denied.reason)
 
 
 if __name__ == "__main__":

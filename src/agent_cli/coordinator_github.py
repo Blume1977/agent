@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from .allow import GATE_PAIRS, evaluate_allow
+from .allow import GATE_PAIRS, both_codex_reviews_na, evaluate_allow
 from .coordinator_common import (
     ACCEPT_BODY,
     ACCEPT_MARKER_PREFIX,
@@ -51,6 +51,7 @@ from .github_act import (
     REVIEW_APPROVE_NON_APPROVED,
 )
 from .github_accounts import AccountError
+from .pr_guard_config import PrGuardLookupError, fetch_trusted_pr_guard, one_review_for
 from .store import Store, StoreError, utcnow
 
 # Executor error strings that prove an observed same-marker APPROVE rejection.
@@ -920,8 +921,11 @@ def phase_readiness(store: Store, worker: WorkerConfig, task: dict[str, Any], ru
         save_task(store, task)
         return [retry]
     latest = latest_gates(store, task["id"])
+    skip_codex = _codex_skip(store, worker, task, runner, phase="readiness", head=head)
+    if isinstance(skip_codex, list):
+        return skip_codex
     for stage, dimension, vendor in GATE_PAIRS:
-        if stage == "codex-pr" and _both_codex_reviews_na(store, task["id"]):
+        if stage == "codex-pr" and skip_codex:
             continue
         g = latest.get((stage, dimension))
         if g is None or g.get("verdict") != "approved" or g.get("head_sha") != head or g.get("vendor") != vendor:
@@ -1040,8 +1044,11 @@ def phase_formal_approve(
         save_task(store, task)
         return [retry]
     latest = latest_gates(store, task["id"])
+    skip_codex = _codex_skip(store, worker, task, runner, phase="formal_approve", head=head)
+    if isinstance(skip_codex, list):
+        return skip_codex
     for stage, dimension, vendor in GATE_PAIRS:
-        if stage == "codex-pr" and _both_codex_reviews_na(store, task["id"]):
+        if stage == "codex-pr" and skip_codex:
             continue
         g = latest.get((stage, dimension))
         if g is None or g.get("verdict") != "approved" or g.get("head_sha") != head or g.get("vendor") != vendor:
@@ -1158,10 +1165,11 @@ def phase_formal_approve(
 def _task_snapshot(store: Store, tid: str) -> dict[str, Any]:
     task = store.row("task", tid)
     assert task is not None
-    checklist = {
-        str(r["key"]): str(r["status"])
-        for r in store.rows("checklist_item")
-        if r.get("task_id") == tid
+    checklist_rows = [r for r in store.rows("checklist_item") if r.get("task_id") == tid]
+    checklist = {str(r["key"]): str(r["status"]) for r in checklist_rows}
+    checklist_evidence = {
+        str(r["key"]): r.get("evidence") if isinstance(r.get("evidence"), str) else ""
+        for r in checklist_rows
     }
     checks = [c for c in store.rows("local_check") if c.get("task_id") == tid]
     ordered_checks = sorted(checks, key=lambda c: c.get("ran_at") or "")
@@ -1190,6 +1198,7 @@ def _task_snapshot(store: Store, tid: str) -> dict[str, Any]:
         "workflow": task.get("workflow"),
         "state": task.get("state"),
         "checklist": checklist,
+        "checklist_evidence": checklist_evidence,
         "summaries": {
             "en": task.get("change_summary_en") or "",
             "de": task.get("change_summary_de") or "",
@@ -1200,11 +1209,78 @@ def _task_snapshot(store: Store, tid: str) -> dict[str, Any]:
 
 
 def _both_codex_reviews_na(store: Store, task_id: str) -> bool:
-    checklist = _task_snapshot(store, task_id).get("checklist") or {}
-    return (
-        checklist.get("codex_pr_quality") == "n_a"
-        and checklist.get("codex_pr_logic") == "n_a"
-    )
+    rows = {
+        str(row.get("key")): row
+        for row in store.rows("checklist_item")
+        if row.get("task_id") == task_id
+    }
+    statuses: dict[str, Any] = {}
+    evidence: dict[str, Any] = {}
+    for key in ("codex_pr_quality", "codex_pr_logic"):
+        row = rows.get(key)
+        if not isinstance(row, dict):
+            return False
+        statuses[key] = row.get("status")
+        evidence[key] = row.get("evidence")
+    return both_codex_reviews_na(statuses, evidence)
+
+
+def _trusted_done_review(
+    store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner
+) -> tuple[str, dict[str, Any] | None]:
+    """Live opener and trusted config for a done decision.
+
+    One review is enough only when the pull request opener is listed in
+    one_review_authors in the trusted .github/pr-guard.json on the default
+    branch. A missing file, a missing key, or an empty list keeps two reviews
+    required. An entry that exists only on the pull request head does not count.
+    A stored payload copy is not this decision. A lookup failure raises
+    ``CiObservationTransportError``.
+    """
+    if not _both_codex_reviews_na(store, task["id"]):
+        return "", None
+    target = target_repo(task)
+    number = as_int(coord(task).get("pr_number"))
+    if number is None or not target:
+        return "", None
+    scoped_runner = scoped(store, worker.session_id, runner)
+    pr = _fetch_pr_json(scoped_runner, target, number, "author")
+    author = pr.get("author") if isinstance(pr, dict) and isinstance(pr.get("author"), dict) else {}
+    login = str(author.get("login") or "")
+    if not login:
+        return "", None
+    try:
+        config = fetch_trusted_pr_guard(scoped_runner, target)
+    except PrGuardLookupError as exc:
+        raise CiObservationTransportError("trusted pr-guard file could not be read") from exc
+    return login, config
+
+
+def _opener_one_review(
+    store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner
+) -> bool:
+    """Two reviews are required before Ready.
+
+    One review is enough only when the pull request opener is listed in
+    one_review_authors in the trusted .github/pr-guard.json on the default
+    branch. A missing file, a missing key, or an empty list keeps two reviews
+    required. An entry that exists only on the pull request head does not count.
+    """
+    login, config = _trusted_done_review(store, worker, task, runner)
+    return one_review_for(config, login)
+
+
+def _codex_skip(store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner, *, phase: str, head: str) -> bool | list[str]:
+    """True when the second review may be skipped. A list is a retry message. Two reviews are the standard. One review is enough only when the pull request opener is listed in one_review_authors in the trusted .github/pr-guard.json on the default branch. A missing file, a missing key, or an empty list keeps two reviews required. An entry that exists only on the pull request head does not count."""
+    if not _both_codex_reviews_na(store, task["id"]):
+        return False
+    try:
+        return _opener_one_review(store, worker, task, runner)
+    except CiObservationTransportError:
+        c = coord(task)
+        c["phase"] = phase
+        save_task(store, task)
+        return [f"trusted review list temporarily unavailable on {head[:7]}; retrying {phase}"]
 
 
 def _invalidate_stale_formal_approval(task: dict[str, Any], *, reason: str) -> None:
@@ -1288,6 +1364,97 @@ def _require_formal_head_evidence(task: dict[str, Any], head: str, *, when: str)
         raise CoordinatorError(f"formal approve not on current head{when}")
 
 
+def _leave_draft_comment(head: str, *, one_review: bool) -> str:
+    """Ready evidence comment.
+
+    One review is enough only when the pull request opener is listed in
+    one_review_authors in the trusted .github/pr-guard.json on the default
+    branch. A missing file, a missing key, or an empty list keeps two reviews
+    required. An entry that exists only on the pull request head does not count.
+    """
+    if one_review:
+        lead = (
+            f"Ready for review: one review run is approved on `{head[:7]}` "
+            f"and CI green, because this pull request opener is listed in one_review_authors. "
+        )
+    else:
+        lead = (
+            f"Ready for review: two review runs are required and approved on `{head[:7]}` "
+            f"and CI green. "
+        )
+    return (
+        lead
+        + "One review is enough only when the pull request opener is listed in "
+        "one_review_authors in the trusted .github/pr-guard.json on the default branch. "
+        "A missing file, a missing key, or an empty list keeps two reviews required. "
+        "An entry that exists only on the pull request head does not count. "
+        "Still not merge; a human merges."
+    )
+
+
+def _revoked_exception_comment(head: str) -> str:
+    """Correction when the one-review exception disappears before Ready.
+
+    One review is enough only when the pull request opener is listed in
+    one_review_authors in the trusted .github/pr-guard.json on the default
+    branch. A missing file, a missing key, or an empty list keeps two reviews
+    required. An entry that exists only on the pull request head does not count.
+    """
+    return (
+        f"Ready was not set on `{head[:7]}`. "
+        "The one-review exception was no longer present when leave-draft was about to "
+        "mark the pull request ready. Two review runs are required. "
+        "One review is enough only when the pull request opener is listed in "
+        "one_review_authors in the trusted .github/pr-guard.json on the default branch. "
+        "A missing file, a missing key, or an empty list keeps two reviews required. "
+        "An entry that exists only on the pull request head does not count. "
+        "Still not merge; a human merges."
+    )
+
+
+def _raise_revoked_one_review(
+    store: Store,
+    worker: WorkerConfig,
+    runner: Runner,
+    task: dict[str, Any],
+    *,
+    target: str,
+    number: int,
+    head: str,
+) -> None:
+    """Post the correction once, then refuse Ready.
+
+    One review is enough only when the pull request opener is listed in
+    one_review_authors in the trusted .github/pr-guard.json on the default
+    branch. A missing file, a missing key, or an empty list keeps two reviews
+    required. An entry that exists only on the pull request head does not count.
+    """
+    withdrawn_id = str(
+        uuid5(NAMESPACE_URL, f"coordinator-ready-withdrawn:{task['id']}:{head}")
+    )
+    existing = store.row("activity", withdrawn_id)
+    if existing is None or existing.get("execution_status") != "done":
+        queue_activity(
+            store,
+            activity_id=withdrawn_id,
+            session_id=worker.session_id,
+            typ="comment.post",
+            payload={
+                "repo": target,
+                "number": number,
+                "body": _revoked_exception_comment(head),
+                "target": "pr",
+            },
+        )
+        execute_github(store, runner, activity_ids=(withdrawn_id,))
+        withdrawn = store.row("activity", withdrawn_id)
+        if withdrawn is None or withdrawn.get("execution_status") != "done":
+            raise CoordinatorError("revoked one-review comment not verified")
+    raise CoordinatorError(
+        "one-review exception revoked before leave-draft; two reviews are required"
+    )
+
+
 def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner) -> list[str]:
     c = coord(task)
     target = target_repo(task)
@@ -1329,8 +1496,30 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
         save_task(store, task)
         return [f"formal APPROVE not yet visible on {head[:7]}; retrying leave-draft"]
     latest = latest_gates(store, task["id"])
+    skip_codex = _codex_skip(store, worker, task, runner, phase="leave_draft", head=head)
+    if isinstance(skip_codex, list):
+        return skip_codex
+    # A previous tick already published the one-review evidence comment. If the
+    # live list no longer grants the exception, correct it before the gate
+    # loop. Keys that are no longer n_a are a real two-review pass and still
+    # go through the gates. A transport error already returned above.
+    if not skip_codex and _both_codex_reviews_na(store, task["id"]):
+        one_id = str(
+            uuid5(NAMESPACE_URL, f"coordinator-ready-comment:{task['id']}:{head}:one")
+        )
+        one_row = store.row("activity", one_id)
+        if one_row is not None and one_row.get("execution_status") == "done":
+            _raise_revoked_one_review(
+                store,
+                worker,
+                runner,
+                task,
+                target=target,
+                number=number,
+                head=head,
+            )
     for stage, dimension, vendor in GATE_PAIRS:
-        if stage == "codex-pr" and _both_codex_reviews_na(store, task["id"]):
+        if stage == "codex-pr" and skip_codex:
             continue
         g = latest.get((stage, dimension))
         if g is None or g.get("verdict") != "approved" or g.get("head_sha") != head or g.get("vendor") != vendor:
@@ -1380,12 +1569,14 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
     c["phase"] = "leave_draft"
     save_task(store, task)
 
-    body = (
-        f"Ready for review: the first review run is required and approved on `{head[:7]}` "
-        f"and CI green. The second review run does not block Ready. "
-        f"Still not merge; a human merges."
+    one_review = bool(skip_codex)
+    body = _leave_draft_comment(head, one_review=one_review)
+    # The decision is part of the id. A later pass that no longer has the
+    # exception posts its own two-review comment instead of reusing this one.
+    decision = "one" if one_review else "two"
+    activity_id = str(
+        uuid5(NAMESPACE_URL, f"coordinator-ready-comment:{task['id']}:{head}:{decision}")
     )
-    activity_id = str(uuid5(NAMESPACE_URL, f"coordinator-ready-comment:{task['id']}:{head}"))
     queue_activity(
         store,
         activity_id=activity_id,
@@ -1406,6 +1597,22 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
         c["phase"] = "leave_draft"
         save_task(store, task)
         return [retry_after_comment]
+    # The evidence comment is an external call. Re-read the trusted list before
+    # Ready. One review is enough only while the opener is still listed.
+    if skip_codex:
+        again = _codex_skip(store, worker, task, runner, phase="leave_draft", head=head)
+        if isinstance(again, list):
+            return again
+        if not again:
+            _raise_revoked_one_review(
+                store,
+                worker,
+                runner,
+                task,
+                target=target,
+                number=number,
+                head=head,
+            )
     ready = scoped_runner(["gh", "pr", "ready", str(number), "--repo", target])
     if ready.returncode != 0:
         raise CoordinatorError(redact(ready.stderr or ready.stdout or "gh pr ready failed"))
@@ -1430,6 +1637,48 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
     task["state"] = "pr-review"
     save_task(store, task)
     return [f"left draft {target}#{number}; awaiting human merge"]
+
+
+def _record_human_merge(
+    store: Store,
+    worker: WorkerConfig,
+    *,
+    target: str,
+    number: int,
+    sha: str,
+    merged_at: str,
+    login: str,
+    merged_type: str,
+    expected_head: str,
+    url: str,
+    pr_open_id: Any,
+) -> None:
+    """Record the human merge once. This does not mark the task done."""
+    mid = str(uuid5(NAMESPACE_URL, f"coordinator-merged:{target}:{number}:{sha}"))
+    if store.row("activity", mid) is not None:
+        return
+    store.write(
+        "activity",
+        "insert",
+        mid,
+        {
+            "id": mid,
+            "session_id": worker.session_id,
+            "type": "pr.merged",
+            "payload": {
+                "repo": target,
+                "number": number,
+                "url": url,
+                "merge_sha": sha,
+                "merged_at": merged_at,
+                "merged_by": login.casefold(),
+                "merged_by_type": merged_type,
+                "reviewed_head": expected_head,
+                "pr_open_id": pr_open_id,
+            },
+            "execution_status": "done",
+        },
+    )
 
 
 def phase_await_merge(store: Store, worker: WorkerConfig, task: dict[str, Any], runner: Runner) -> list[str]:
@@ -1487,6 +1736,26 @@ def phase_await_merge(store: Store, worker: WorkerConfig, task: dict[str, Any], 
                 "describing the actual result"
             ]
         snap = _task_snapshot(store, task["id"])
+        pr_open_id = c.get("pr_open_activity_id")
+        try:
+            opener, config = _trusted_done_review(store, worker, task, runner)
+        except CiObservationTransportError:
+            _record_human_merge(
+                store,
+                worker,
+                target=target,
+                number=number,
+                sha=sha,
+                merged_at=merged_at,
+                login=login,
+                merged_type=merged_type,
+                expected_head=expected_head,
+                url=str(info.get("html_url") or ""),
+                pr_open_id=pr_open_id,
+            )
+            return ["trusted review list could not be read; retrying await_merge"]
+        snap["pull_opener"] = opener
+        snap["trusted_pr_guard"] = config
         allow = evaluate_allow(
             "task-done",
             session_id=worker.session_id,
@@ -1496,31 +1765,19 @@ def phase_await_merge(store: Store, worker: WorkerConfig, task: dict[str, Any], 
         if not allow.allowed:
             return [f"human merge observed; task-done blocked: {allow.reason} {allow.blocking}"]
 
-        pr_open_id = c.get("pr_open_activity_id")
-        mid = str(uuid5(NAMESPACE_URL, f"coordinator-merged:{target}:{number}:{sha}"))
-        if store.row("activity", mid) is None:
-            store.write(
-                "activity",
-                "insert",
-                mid,
-                {
-                    "id": mid,
-                    "session_id": worker.session_id,
-                    "type": "pr.merged",
-                    "payload": {
-                        "repo": target,
-                        "number": number,
-                        "url": info.get("html_url") or "",
-                        "merge_sha": sha,
-                        "merged_at": merged_at,
-                        "merged_by": login.casefold(),
-                        "merged_by_type": merged_type,
-                        "reviewed_head": expected_head,
-                        "pr_open_id": pr_open_id,
-                    },
-                    "execution_status": "done",
-                },
-            )
+        _record_human_merge(
+            store,
+            worker,
+            target=target,
+            number=number,
+            sha=sha,
+            merged_at=merged_at,
+            login=login,
+            merged_type=merged_type,
+            expected_head=expected_head,
+            url=str(info.get("html_url") or ""),
+            pr_open_id=pr_open_id,
+        )
         source = c["source"]
         assigned_id = source.get("assigned_id")
         if isinstance(assigned_id, str) and assigned_id:

@@ -7,7 +7,11 @@ import pytest
 
 from agent_cli import pr_lifecycle
 from agent_cli.a38_guard import GuardError, reconcile_pull, status_context_enforce
-from agent_cli.a38_review import BLOCKING_REVIEW_REASON, LIFECYCLE_REASON
+from agent_cli.a38_review import (
+    BLOCKING_REVIEW_REASON,
+    LIFECYCLE_REASON,
+    SECOND_REVIEW_MISSING,
+)
 from agent_cli.pr_guard_config import load_pr_guard_config, PrGuardConfigError
 from agent_cli.pr_lifecycle import (
     AUTH_MARKER,
@@ -184,12 +188,35 @@ def test_visible_transition_sentences_green_ready_unchanged():
     en, de = visible_transition_sentences({"state": "ready", "reasons": []})
     assert en == (
         "Required CI is green, the review completion is present, "
-        "and no merge conflicts exist; this pull request is ready for review."
+        "and no merge conflicts exist; this pull request is ready for review. "
+        "Two review comments are required. "
+        "One review is enough only when the pull request opener is listed in "
+        "one_review_authors in the trusted .github/pr-guard.json on the default branch. "
+        "A missing file, a missing key, or an empty list keeps two reviews required. "
+        "An entry that exists only on the pull request head does not count."
     )
     assert de == (
         "Die Required CI ist grün, der Review-Abschluss liegt vor "
-        "und es gibt keine Merge-Konflikte; dieser Pull Request ist bereit zum Review."
+        "und es gibt keine Merge-Konflikte; dieser Pull Request ist bereit "
+        "zum Review. Zwei Review-Kommentare sind Pflicht. "
+        "Ein Review reicht nur, wenn der PR-Eröffner in one_review_authors der "
+        "vertrauenswürdigen .github/pr-guard.json auf dem Default-Branch steht. "
+        "Fehlt die Datei, der Schlüssel, oder ist die Liste leer, bleiben zwei Reviews Pflicht. "
+        "Ein Eintrag nur im PR-Head zählt nicht."
     )
+
+
+def test_visible_transition_sentences_green_ready_names_the_one_review_exception():
+    en, de = visible_transition_sentences(
+        {"state": "ready", "reasons": []}, one_review=True
+    )
+    assert "because this pull request opener is listed in one_review_authors." in en
+    assert "One review is enough only when the pull request opener is listed in one_review_authors" in en
+    assert "An entry that exists only on the pull request head does not count." in en
+    assert "weil dieser PR-Eröffner in one_review_authors steht." in de
+    assert "Ein Review reicht nur, wenn der PR-Eröffner in one_review_authors" in de
+    assert "Ein Eintrag nur im PR-Head zählt nicht." in de
+    assert "Two review comments are required." not in en
 
 
 def test_visible_transition_sentences_queued_ci():
@@ -1383,6 +1410,48 @@ def _write_author(fake: LifecycleAPI) -> None:
         "permission": "write",
         "user": {"id": AUTHOR_ID, "login": "author", "type": "User"},
     }
+
+
+def test_visible_transition_sentences_missing_second_review_only():
+    en, de = visible_transition_sentences({
+        "state": "draft",
+        "reasons": [SECOND_REVIEW_MISSING],
+    })
+    assert en == (
+        "This pull request is back in Draft because the second review comment is missing. "
+        "One review is enough only when the pull request opener is listed in "
+        "one_review_authors in the trusted .github/pr-guard.json on the default branch. "
+        "A missing file, a missing key, or an empty list keeps two reviews required. "
+        "An entry that exists only on the pull request head does not count."
+    )
+    assert de == (
+        "Dieser Pull Request steht wieder auf Draft, weil der zweite Review-Kommentar fehlt. "
+        "Ein Review reicht nur, wenn der PR-Eröffner in one_review_authors der "
+        "vertrauenswürdigen .github/pr-guard.json auf dem Default-Branch steht. "
+        "Fehlt die Datei, der Schlüssel, oder ist die Liste leer, bleiben zwei Reviews Pflicht. "
+        "Ein Eintrag nur im PR-Head zählt nicht."
+    )
+    assert "the review completion is missing or invalid" not in en
+    assert "CI" not in en
+
+
+def test_write_author_ready_missing_second_review_returns_to_draft():
+    fake = LifecycleAPI()
+    _write_author(fake)
+    fake.include_second_review = False
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert result.write_ready
+    assert result.write_ready_reason == "author has write"
+    assert result.lifecycle["action"] == "draft"
+    assert SECOND_REVIEW_MISSING in result.lifecycle["reasons"]
+    assert LIFECYCLE_REASON not in result.lifecycle["reasons"]
+    assert BLOCKING_REVIEW_REASON not in result.lifecycle["reasons"]
+    assert fake.pull["draft"]
+    assert fake.transitions == [True]
+    body = "\n".join(comment.get("body", "") for comment in fake.comments)
+    assert "the second review comment is missing" in body
+    assert "der zweite Review-Kommentar fehlt" in body
+    assert "the review completion is missing or invalid" not in body
 
 
 def test_write_author_ready_blocking_second_run_returns_to_draft():
