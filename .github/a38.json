@@ -26,12 +26,30 @@
             "port_env": "AGENT_TEST_PG_PORT"
           },
           "steps": [
-            ["python3", "-m", "pip", "install", "-q", "-e", ".[test]"],
-            ["python3", "-m", "pytest"]
+            [
+              "python3",
+              "-m",
+              "pip",
+              "install",
+              "-q",
+              "-e",
+              ".[test]"
+            ],
+            [
+              "python3",
+              "-m",
+              "pytest"
+            ]
           ]
         }
       }
     }
   ],
-  "exclusions": []
+  "exclusions": [
+    {
+      "workflow": ".github/workflows/a38-guard.yml",
+      "job": "guard",
+      "reason": "The report guard itself: trusted pinned workflow that audits A38 reports; not a pull-request test."
+    }
+  ]
 }
