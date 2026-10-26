@@ -986,6 +986,7 @@ def test_pagination_exact_page_does_not_fetch_another_page() -> None:
         {"total_count": 1, "workflow_runs": [{"id": "101"}]},
         {"total_count": 2, "workflow_runs": [FakeApproval.run(), FakeApproval.run()]},
         {"total_count": 1, "workflow_runs": [FakeApproval.run(), "x"]},
+        {"total_count": 1, "workflow_runs": [FakeApproval.run(id=1), FakeApproval.run(id=2)]},
     ],
     ids=[
         "at-max-bound",
@@ -997,6 +998,7 @@ def test_pagination_exact_page_does_not_fetch_another_page() -> None:
         "string-id",
         "duplicate-ids",
         "non-mapping-item",
+        "more-rows-than-total",
     ],
 )
 def test_malformed_inventory_fails_closed_without_post(inventory: dict) -> None:
@@ -1041,31 +1043,47 @@ def test_pagination_duplicate_id_across_pages_fails_closed() -> None:
     assert fake.posts == []
 
 
-def test_pagination_empty_page_and_bound_exceeded_fail_closed() -> None:
+def test_short_page_ends_the_list_when_total_count_is_higher() -> None:
     fake = FakeApproval()
 
-    def incomplete(page: int) -> dict:
+    def short(page: int) -> dict:
+        if page != 1:
+            raise AssertionError(f"unexpected page {page}")
+        return {"total_count": 2, "workflow_runs": [fake.run()]}
+
+    fake.inventory = short
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [101]
+    assert fake.actions_pages == [1] * 16
+    assert 2 not in fake.actions_pages
+    assert any(
+        item["run_id"] == 101 and item["status"] == "approved"
+        for item in result.workflow_approvals
+    )
+
+
+def test_empty_followup_page_ends_the_list() -> None:
+    fake = FakeApproval()
+    page_one = [FakeApproval.run(id=i, event="push") for i in range(1, 100)]
+    page_one.append(FakeApproval.run(id=100))
+    fake.runs = page_one
+
+    def full_then_empty(page: int) -> dict:
         if page == 1:
-            return {"total_count": 2, "workflow_runs": [fake.run()]}
-        return {"total_count": 2, "workflow_runs": []}
+            return {"total_count": 150, "workflow_runs": copy.deepcopy(page_one)}
+        if page == 2:
+            return {"total_count": 150, "workflow_runs": []}
+        raise AssertionError(f"unexpected page {page}")
 
-    fake.inventory = incomplete
-    with pytest.raises(GuardError, match="incomplete"):
-        reconcile_pull(fake.api(), REPO, 1)
-    assert fake.posts == []
-
-    def ten_short_pages(page: int) -> dict:
-        return {
-            "total_count": 150,
-            "workflow_runs": [FakeApproval.run(id=page * 100 + i, event="push") for i in range(10)],
-        }
-
-    fake = FakeApproval()
-    fake.inventory = ten_short_pages
-    with pytest.raises(GuardError, match="pagination bound"):
-        reconcile_pull(fake.api(), REPO, 1)
-    assert fake.posts == []
-    assert fake.actions_pages == list(range(1, 11))
+    fake.inventory = full_then_empty
+    result = reconcile_pull(fake.api(), REPO, 1)
+    assert fake.posts == [100]
+    assert fake.actions_pages == [1, 2] * 16
+    assert 3 not in fake.actions_pages
+    assert any(
+        item["run_id"] == 100 and item["status"] == "approved"
+        for item in result.workflow_approvals
+    )
 
 
 def test_runs_helper_rejects_count_change_and_duplicates() -> None:
@@ -1074,10 +1092,10 @@ def test_runs_helper_rejects_count_change_and_duplicates() -> None:
             page = int((parse_qs(urlparse(path).query).get("page") or ["1"])[0])
             if page == 1:
                 return {
-                    "total_count": 3,
-                    "workflow_runs": [FakeApproval.run(id=1), FakeApproval.run(id=2)],
+                    "total_count": 101,
+                    "workflow_runs": [FakeApproval.run(id=i, event="push") for i in range(1, 101)],
                 }
-            return {"total_count": 4, "workflow_runs": [FakeApproval.run(id=3)]}
+            return {"total_count": 102, "workflow_runs": [FakeApproval.run(id=101, event="push")]}
 
     with pytest.raises(GuardError, match="changed or exceeds"):
         wa._runs(Scripted(), REPO, HEAD)

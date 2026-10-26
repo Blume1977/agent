@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from urllib.parse import urlencode
 
 MAX_RUNS = 1000
+PAGE_SIZE = 100
 # Approving an older held run can cancel one of these through cancel-in-progress.
 _IN_FLIGHT_STATUSES = frozenset({
     "queued", "in_progress", "waiting", "requested", "pending",
@@ -52,7 +53,7 @@ def _list_runs(api: Any, repo: str, params: Mapping[str, Any]) -> list[Mapping[s
     items: list[Mapping[str, Any]] = []
     total = None
     for page in range(1, 11):
-        query = urlencode({**params, "per_page": 100, "page": page})
+        query = urlencode({**params, "per_page": PAGE_SIZE, "page": page})
         data = api.get_json(f"/repos/{repo}/actions/runs?{query}")
         if not isinstance(data, Mapping) or type(data.get("total_count")) is not int:
             raise GuardError("workflow run inventory missing total_count")
@@ -63,14 +64,19 @@ def _list_runs(api: Any, repo: str, params: Mapping[str, Any]) -> list[Mapping[s
         batch = data.get("workflow_runs")
         if not isinstance(batch, list) or any(not isinstance(r, Mapping) for r in batch):
             raise GuardError("workflow run inventory invalid")
+        if not batch:
+            # A short or empty page is the end of the list. total_count is a ceiling.
+            if items or total == 0:
+                return items
+            raise GuardError("workflow run inventory incomplete")
         items.extend(batch)
         ids = [r.get("id") for r in items]
         if any(type(i) is not int or i <= 0 for i in ids) or len(set(ids)) != len(ids):
             raise GuardError("workflow run inventory has invalid or duplicate IDs")
-        if len(items) == total:
-            return items
-        if len(items) > total or not batch:
+        if len(items) > total:
             raise GuardError("workflow run inventory incomplete")
+        if len(batch) < PAGE_SIZE or len(items) == total:
+            return items
     raise GuardError("workflow run pagination bound exceeded")
 
 
