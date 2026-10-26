@@ -15,10 +15,13 @@
 ## Local CI report (A38)
 
 Pull requests in this repository follow the A38 process defined in
-[docs/a38.md](docs/a38.md): the author posts a complete local CI report for the
-current head and a review record as separate comments, and the guard workflow
-owns leaving draft. The manifest is [`.github/a38.json`](.github/a38.json).
-Bootstrap of this policy follows the approval path in the standard.
+[docs/a38.md](docs/a38.md) and the guard guide
+[docs/a38-guard.md](docs/a38-guard.md): the author posts a complete local CI
+report for the current head and a review record as separate comments, and the
+guard workflow owns leaving draft. The configuration is
+[`.github/a38.json`](.github/a38.json) and
+[`.github/pr-guard.json`](.github/pr-guard.json). Bootstrap of this policy
+follows the approval path in the standard.
 
 ## Ready for review
 
