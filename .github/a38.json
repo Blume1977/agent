@@ -1,0 +1,37 @@
+{
+  "schema": "a38/v1",
+  "standard": "A38",
+  "documentation": "docs/a38.md",
+  "mode": "enforce",
+  "jobs": [
+    {
+      "id": "pytest",
+      "name": "pytest",
+      "timeout_s": 1800,
+      "workflow": ".github/workflows/test.yml",
+      "job": "pytest",
+      "executor": {
+        "adapter": "commands",
+        "config": {
+          "env": {
+            "CI": "true",
+            "A38_TEST_DOCKER": "1"
+          },
+          "postgres": {
+            "image": "postgres:16",
+            "user": "agent",
+            "password": "a38-local-test",
+            "database": "postgres",
+            "url_env": "AGENT_TEST_PG",
+            "port_env": "AGENT_TEST_PG_PORT"
+          },
+          "steps": [
+            ["python3", "-m", "pip", "install", "-q", "-e", ".[test]"],
+            ["python3", "-m", "pytest"]
+          ]
+        }
+      }
+    }
+  ],
+  "exclusions": []
+}

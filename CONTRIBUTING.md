@@ -12,6 +12,14 @@
 - The static script runs `pytest` on the exact clean signed final head before Ready for review. Model lanes never execute tests themselves. Tests need PostgreSQL (`AGENT_TEST_PG` or a local `initdb`). Full pytest is not a gate for the first draft publication.
 - Pytest (or any green local suite) is a **check**, not Ready for review and not completion.
 
+## Local CI report (A38)
+
+Pull requests in this repository follow the A38 process defined in
+[docs/a38.md](docs/a38.md): the author posts a complete local CI report for the
+current head and a review record as separate comments, and the guard workflow
+owns leaving draft. The manifest is [`.github/a38.json`](.github/a38.json).
+Bootstrap of this policy follows the approval path in the standard.
+
 ## Ready for review
 
 The static script starts all implementation and review lanes, including each
