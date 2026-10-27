@@ -7,10 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from .ai_accounts import AccountError as AIAccountError
-from .ai_accounts import load_ai_accounts
 from .allow import GATE_PAIRS, both_codex_reviews_na, evaluate_allow
-from .model_slots import ModelSlots
+from .model_slots import ModelSlots, ModelSlotsError, models_from_snapshot
 from .coordinator_common import (
     ACCEPT_BODY,
     ACCEPT_MARKER_PREFIX,
@@ -73,11 +71,11 @@ READINESS_CONTRACT = (
 )
 
 
-def _models(store: Store) -> ModelSlots:
-    """Device model-slot configuration; a broken manifest is a coordinator error."""
+def _task_models(task: dict[str, Any]) -> ModelSlots:
+    """Model slots pinned on the task (historical order for tasks without a pin)."""
     try:
-        return load_ai_accounts(store.home).models
-    except AIAccountError as exc:
+        return models_from_snapshot(task)
+    except ModelSlotsError as exc:
         raise CoordinatorError(str(exc)) from exc
 
 
@@ -936,7 +934,7 @@ def phase_readiness(store: Store, worker: WorkerConfig, task: dict[str, Any], ru
     skip_codex = _codex_skip(store, worker, task, runner, phase="readiness", head=head)
     if isinstance(skip_codex, list):
         return skip_codex
-    models = _models(store)
+    models = _task_models(task)
     for stage, dimension, slot in GATE_PAIRS:
         if stage == "codex-pr" and skip_codex:
             continue
@@ -1061,7 +1059,7 @@ def phase_formal_approve(
     skip_codex = _codex_skip(store, worker, task, runner, phase="formal_approve", head=head)
     if isinstance(skip_codex, list):
         return skip_codex
-    models = _models(store)
+    models = _task_models(task)
     for stage, dimension, slot in GATE_PAIRS:
         if stage == "codex-pr" and skip_codex:
             continue
@@ -1221,6 +1219,7 @@ def _task_snapshot(store: Store, tid: str) -> dict[str, Any]:
         },
         "gates": gates,
         "local_checks": local_checks,
+        "models": _task_models(task).as_dict(),
     }
 
 
@@ -1534,7 +1533,7 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
                 number=number,
                 head=head,
             )
-    models = _models(store)
+    models = _task_models(task)
     for stage, dimension, slot in GATE_PAIRS:
         if stage == "codex-pr" and skip_codex:
             continue

@@ -52,7 +52,7 @@ from .knock import drain as knock_drain
 from .knock import listen_once as knock_listen
 from .lane import LANE_ROLES, LANE_VENDORS, LaneResult, launch
 from .local_ci import LocalCiError, parse_comment, parse_payload, render_block, verify_comment
-from .model_slots import PROVIDER_CHOICES, STAGE_CHOICES, ModelSlots
+from .model_slots import PROVIDER_CHOICES, STAGE_CHOICES, ModelSlots, models_from_snapshot
 from .pg import PgError, cluster_exists, cluster_running, ensure_cluster, require_loopback_dsn, stop_cluster
 from .pr_guard_config import PrGuardLookupError, fetch_trusted_pr_guard, one_review_for
 from .runtime import (
@@ -678,6 +678,7 @@ def cmd_task(args: list[str]) -> None:
                     "ref": flag(rest, "--ref"),
                     "state": "open",
                     "current_round": 0,
+                    "models": _store_models(store).as_dict(),
                     "created_at": utcnow(),
                     "updated_at": utcnow(),
                     "change_summary_en": None,
@@ -924,7 +925,8 @@ def cmd_agent(args: list[str]) -> None:
                 die(f"role must be {'|'.join(AGENT_ROLES)}")
             if vendor not in VENDORS:
                 die(f"vendor must be {PROVIDER_CHOICES}")
-            models = _store_models(store)
+            pinned = store.row("task", tid)
+            models = models_from_snapshot(pinned) if pinned is not None else _store_models(store)
             round_raw = flag(rest, "--round")
             round_num: int | None = None
             if role in ("implementer", "reviewer"):
@@ -1333,11 +1335,11 @@ def cmd_gate(args: list[str]) -> None:
         die("--head must be a git SHA (lowercase hex, length 7–40)")
     store = open_store()
     try:
-        models = _store_models(store)
+        task = _need(store, "task", tid)
+        models = models_from_snapshot(task)
         expected_vendor = models.for_stage(stage)
         if vendor != expected_vendor:
-            die(f"stage {stage} requires vendor {expected_vendor} (configured model slot)")
-        task = _need(store, "task", tid)
+            die(f"stage {stage} requires vendor {expected_vendor} (model slot pinned on the task)")
         session = _need(store, "session", task["session_id"])
         if session.get("status") != "active":
             die(f"session {task['session_id']} is not active")
@@ -2390,7 +2392,7 @@ def load_task_dict(store: Store, tid: str) -> dict:
         "local_checks": local_checks,
         "pull_opener": "",
         "trusted_pr_guard": None,
-        "models": _store_models(store).as_dict(),
+        "models": models_from_snapshot(task).as_dict(),
     }
 
 
@@ -2428,7 +2430,7 @@ def _chain_snapshot(store: Store, tid: str, extra_head: str | None = None) -> di
     return {
         "session_active": bool(session is not None and session.get("status") == "active"),
         "agents": agents,
-        "models": task.get("models") or _store_models(store).as_dict(),
+        "models": task.get("models") or models_from_snapshot(None).as_dict(),
         "gates": task.get("gates") or [],
         "local_checks": task.get("local_checks") or [],
         "head_sha": head,
@@ -2633,12 +2635,12 @@ def cmd_next(args: list[str]) -> None:
     as_json = "--json" in args
     if tid is None or tid == "":
         die("Usage: agent next --task ID [--json]")
-    models = load_model_slots(home())
     store = open_store()
     try:
         _require_task_session_active(store, tid)
         snap = _chain_snapshot(store, tid)
         wf = str(snap["workflow"])
+        models = models_from_snapshot(snap)
         ready = next_steps(wf, snap["checklist"], spine_only=True)
         if as_json:
             print(
@@ -2949,7 +2951,7 @@ def cmd_run(args: list[str]) -> None:
                         step,
                         task_id=str(tid),
                         session_id=str(snap.get("session_id")),
-                        models=_store_models(store),
+                        models=models_from_snapshot(snap),
                     )
                 )
             return
@@ -3071,7 +3073,7 @@ def cmd_run(args: list[str]) -> None:
                 cwd = _resolve_run_cwd(args)
                 tmux = "--no-tmux" not in args
                 role = str(step.role or "")
-                models = _store_models(store)
+                models = models_from_snapshot(snap)
                 vendor = models.for_slot(str(step.slot)) if step.slot else models.first
                 session_id = str(snap.get("session_id") or "")
                 current_round = int(task.get("current_round") or 0)
@@ -3132,11 +3134,11 @@ def cmd_run(args: list[str]) -> None:
                     task = _need(store, "task", tid)
                 else:
                     _agent_handoff_exit(
-                        step, tid, str(snap.get("session_id")), _store_models(store)
+                        step, tid, str(snap.get("session_id")), models_from_snapshot(snap)
                     )
             else:
                 _agent_handoff_exit(
-                    step, tid, str(snap.get("session_id")), _store_models(store)
+                    step, tid, str(snap.get("session_id")), models_from_snapshot(snap)
                 )
         if close_key is None:
             close_ev = (

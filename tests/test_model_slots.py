@@ -440,3 +440,67 @@ def test_cli_models_prints_configured_slots(tmp_path: Path, capsys: pytest.Captu
         _run(tmp_path, ["models", "third"])
     with pytest.raises(SystemExit, match="Usage: agent models"):
         _run(tmp_path, ["models", "--yaml"])
+
+
+def test_coordinator_snapshots_carry_the_configured_models(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The coordinator feeds checklist_snapshot / _task_snapshot into chain and allow; both need models."""
+    from agent_cli.coordinator_github import _task_snapshot
+    from agent_cli.coordinator_lanes import checklist_snapshot
+    from agent_cli.main import open_store
+
+    write_claude_first(tmp_path)
+    tid = _task(tmp_path, capsys)
+    os.environ["AGENT_HOME"] = str(tmp_path)
+    store = open_store()
+    try:
+        task = store.row("task", tid)
+        assert task is not None
+        snap = checklist_snapshot(store, dict(task))
+        assert snap["models"] == {"first": "claude", "second": "codex"}
+        task_snap = _task_snapshot(store, tid)
+        assert task_snap["models"] == {"first": "claude", "second": "codex"}
+    finally:
+        store.close()
+
+
+def test_task_pins_models_at_create(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A later device change does not re-label what a task already recorded."""
+    tid = _task(tmp_path, capsys)  # no manifest yet: historical order
+    _run(tmp_path, ["agent", "start", "--session", "s", "--task", tid, "--role", "pr-reviewer-quality", "--vendor", "grok"])
+    aid = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("agent ")][-1].split()[1]
+    _run(tmp_path, ["agent", "finish", "--id", aid, "--verdict", "approved"])
+    write_claude_first(tmp_path)  # device now says claude first
+    capsys.readouterr()
+    _run(tmp_path, ["gate", "record", "--task", tid, "--stage", "grok-pr", "--dimension", "quality", "--vendor", "grok", "--verdict", "approved", "--head", "abcdef0", "--agent", aid])
+    assert "gate grok-pr/quality=approved" in capsys.readouterr().out
+    from agent_cli.main import load_task_dict, open_store
+
+    os.environ["AGENT_HOME"] = str(tmp_path)
+    store = open_store()
+    try:
+        assert store.row("task", tid).get("models") == {"first": "grok", "second": "codex"}
+        assert load_task_dict(store, tid)["models"] == {"first": "grok", "second": "codex"}
+    finally:
+        store.close()
+    # A task created now pins claude first.
+    _run(tmp_path, ["task", "create", "--session", "s", "--workflow", "implement", "--title", "Next"])
+    tid2 = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("task ")][-1].split()[1]
+    store = open_store()
+    try:
+        assert store.row("task", tid2).get("models") == {"first": "claude", "second": "codex"}
+    finally:
+        store.close()
+
+
+@pytest.mark.no_pg
+def test_models_configured_flag_only_for_an_explicit_block(tmp_path: Path) -> None:
+    assert load_ai_accounts(tmp_path).models_configured is False
+    write_claude_first(tmp_path)
+    assert load_ai_accounts(tmp_path).models_configured is True
+    raw = json.loads((tmp_path / "ai-accounts.json").read_text(encoding="utf-8"))
+    raw.pop("models")
+    raw["lanes"] = {}
+    (tmp_path / "ai-accounts.json").write_text(json.dumps(raw), encoding="utf-8")
+    loaded = load_ai_accounts(tmp_path)
+    assert loaded.models_configured is False
+    assert loaded.models == DEFAULT_MODEL_SLOTS

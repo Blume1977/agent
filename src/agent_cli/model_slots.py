@@ -58,7 +58,7 @@ class ModelSlots:
         return {"first": self.first, "second": self.second}
 
 
-# Historical order used when a device has not configured ``models``.
+# Historical order used when a device or a task has no ``models``.
 DEFAULT_MODEL_SLOTS = ModelSlots("grok", "codex")
 
 
@@ -80,7 +80,13 @@ def parse_model_slots(raw: Any) -> ModelSlots:
 
 
 def models_from_snapshot(snapshot: Mapping[str, Any] | None) -> ModelSlots:
-    """Read ``models`` from a task/chain snapshot; absent means the historical order."""
+    """Read ``models`` from a task row or snapshot; absent means the historical order.
+
+    A task pins the device's ``models`` when it is created, so a later change of
+    the device configuration never re-labels the gates and agents a task already
+    recorded. Tasks created before model slots existed carry no ``models`` and
+    keep the historical order ``grok``, then ``codex``.
+    """
     raw = (snapshot or {}).get("models")
     if raw is None:
         return DEFAULT_MODEL_SLOTS
