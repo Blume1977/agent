@@ -7,7 +7,7 @@ description: >-
 
 # Review loop
 
-Requires **spine**. Roles: `implementer`, `reviewer`. The reviewer runs on model slot `first` (`--vendor` = `models.first` from `ai-accounts.json`); the implementer may run on either slot (`models.first` or `models.second`).
+Requires **spine**. Roles: `implementer`, `reviewer`. The reviewer runs on model slot `first`; the implementer may run on either slot. `--vendor` is the provider pinned on the task when it was created: read it from `agent next --task <uuid> --json` (`next[].vendor`, `slot`) or the handoff's `who=`. `agent models` shows the device setting, which applies to new tasks only.
 
 Without this skill, implementer and reviewer `agent agent` commands refuse.
 
