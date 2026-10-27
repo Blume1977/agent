@@ -23,6 +23,7 @@ from .allow import CHECKLIST_KEYS
 from .coordinator_common import (
     REQUIRED_LANE_SLOTS,
     REQUIRED_REVIEW_SKILLS,
+    required_lane_slots,
     REQUIRED_WORKER_SKILLS,
     CiObservedFailureError,
     CoordinatorError,
@@ -126,10 +127,10 @@ def preflight_worker(store: Store, worker: WorkerConfig, runner: Runner) -> None
         raise CoordinatorError(str(exc)) from exc
     try:
         ai = load_ai_accounts(store.home)
-        for slot in REQUIRED_LANE_SLOTS:
+        for slot in required_lane_slots(ai.models):
             vendor, role = slot.split(":", 1)
             selected = ai.for_lane(worker.session_id, role, vendor)
-            if slot == "grok:implementer" and selected.access != "workspace-write":
+            if role == "implementer" and selected.access != "workspace-write":
                 raise CoordinatorError("implementer lane requires workspace-write access")
             if role != "implementer" and selected.access != "read-only":
                 raise CoordinatorError(f"{slot} requires read-only access")
@@ -151,10 +152,19 @@ def execution_binding(store: Store, worker: WorkerConfig, repo: str) -> str:
         "worker_session": worker.session_id, "review_session": worker.review_session,
         "reply_logins": worker.reply_logins,
         "github": [asdict(github.for_session(sid)) for sid in (worker.session_id, worker.review_session)],
+        "models": ai.models.as_dict(),
         "lanes": [asdict(ai.for_lane(worker.session_id, slot.split(":", 1)[1], slot.split(":", 1)[0]))
-                  for slot in REQUIRED_LANE_SLOTS],
+                  for slot in required_lane_slots(ai.models)],
     }
     return hashlib.sha256(json.dumps(selected, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _first_slot_vendor(store: Store) -> str:
+    """Provider configured for model slot ``first`` on this device."""
+    try:
+        return load_ai_accounts(store.home).models.first
+    except AIAccountError as exc:
+        raise CoordinatorError(str(exc)) from exc
 
 
 def _terminal(task: dict[str, Any]) -> bool:
@@ -909,12 +919,13 @@ def phase_implement(
             draft_lines=[],
         )
 
+    first_vendor = _first_slot_vendor(store)
     agent, result = launch_lane(
         store,
         worker,
         task,
         role="implementer",
-        vendor="grok",
+        vendor=first_vendor,
         round_num=round_num,
         spec_body=_spec_context(c, _implementer_instruction(store, worker, task, runner)),
         runner=runner,
@@ -927,7 +938,7 @@ def phase_implement(
     # A crash before this save resumes by launching the implementer again.
     c["lane_outcome"] = {
         "role": "implementer",
-        "vendor": "grok",
+        "vendor": first_vendor,
         "round": round_num,
         "agent_id": agent["id"],
         "status": status,
@@ -1072,7 +1083,7 @@ def phase_inner_review(
         worker,
         task,
         role="reviewer",
-        vendor="grok",
+        vendor=_first_slot_vendor(store),
         round_num=round_num,
         spec_body=_spec_context(
             c,

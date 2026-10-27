@@ -100,9 +100,10 @@ for worker in workers.values():
   authenticated, and bound to **different** logins; worker account has git
   identity for signed commits. Missing or mismatched profiles start **no**
   provider.
-- Required AI slots: `grok:implementer`, `grok:reviewer`,
-  `grok:pr-reviewer-quality`, `grok:pr-reviewer-logic`,
-  `codex:pr-reviewer-quality`, `codex:pr-reviewer-logic`.
+- Required AI slots, with `<first>` / `<second>` the providers of the device's
+  model slots (`ai-accounts.json` → `models`): `<first>:implementer`,
+  `<first>:reviewer`, `<first>:pr-reviewer-quality`, `<first>:pr-reviewer-logic`,
+  `<second>:pr-reviewer-quality`, `<second>:pr-reviewer-logic`.
 - Checkpoints live in `task.payload['coordinator']` and activity `result`
   fields. There is **no** second hub state machine and **no** new store table.
 - `runner` executes `gh`/`git` trusted calls and returns
@@ -190,10 +191,12 @@ for worker in workers.values():
 6. **Tests** run only via script `check_argv` on the exact clean signed head
    (cwd = worktree). Failure routes bounded output to the implementer. Stale
    passes from another head are not reused.
-7. **PR gates**: Grok quality+logic in **parallel** (fresh independent
-   invocations; agent rows prepared on the main thread, subprocesses in
-   threads, results persisted on the main thread), then Codex quality+logic the
-   same way only after both Grok dimensions are approved on that head. Author
+7. **PR gates**: model slot `first` quality+logic in **parallel** (fresh
+   independent invocations; agent rows prepared on the main thread, subprocesses
+   in threads, results persisted on the main thread), then model slot `second`
+   quality+logic the same way only after both first-slot dimensions are approved
+   on that head. The phase and stage names `pr_gates_grok` / `grok-pr` and
+   `pr_gates_codex` / `codex-pr` are the historical identifiers of the two slots. Author
    session does not sit those reviews. Incomplete/unavailable vendor output is a
    GitHub-visible blocker with `resume_phase` of `pr_gates_grok` /
    `pr_gates_codex` and a pinned `question_activity_id` — not a rejected

@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from .ai_accounts import AccountError as AIAccountError
+from .ai_accounts import load_ai_accounts
 from .allow import GATE_PAIRS, both_codex_reviews_na, evaluate_allow
+from .model_slots import ModelSlots
 from .coordinator_common import (
     ACCEPT_BODY,
     ACCEPT_MARKER_PREFIX,
@@ -68,6 +71,15 @@ READINESS_CONTRACT = (
     "|{\"declared\":true,\"granted\":true,\"granted_by\":\"<reply_login>\","
     '"evidence":"<human grant provenance>"}}'
 )
+
+
+def _models(store: Store) -> ModelSlots:
+    """Device model-slot configuration; a broken manifest is a coordinator error."""
+    try:
+        return load_ai_accounts(store.home).models
+    except AIAccountError as exc:
+        raise CoordinatorError(str(exc)) from exc
+
 
 
 def acceptance_marker(repo: str, number: int, session_id: str) -> str:
@@ -924,9 +936,11 @@ def phase_readiness(store: Store, worker: WorkerConfig, task: dict[str, Any], ru
     skip_codex = _codex_skip(store, worker, task, runner, phase="readiness", head=head)
     if isinstance(skip_codex, list):
         return skip_codex
-    for stage, dimension, vendor in GATE_PAIRS:
+    models = _models(store)
+    for stage, dimension, slot in GATE_PAIRS:
         if stage == "codex-pr" and skip_codex:
             continue
+        vendor = models.for_slot(slot)
         g = latest.get((stage, dimension))
         if g is None or g.get("verdict") != "approved" or g.get("head_sha") != head or g.get("vendor") != vendor:
             raise CoordinatorError(f"missing approved gate {stage}/{dimension} on {head[:7]}")
@@ -1047,9 +1061,11 @@ def phase_formal_approve(
     skip_codex = _codex_skip(store, worker, task, runner, phase="formal_approve", head=head)
     if isinstance(skip_codex, list):
         return skip_codex
-    for stage, dimension, vendor in GATE_PAIRS:
+    models = _models(store)
+    for stage, dimension, slot in GATE_PAIRS:
         if stage == "codex-pr" and skip_codex:
             continue
+        vendor = models.for_slot(slot)
         g = latest.get((stage, dimension))
         if g is None or g.get("verdict") != "approved" or g.get("head_sha") != head or g.get("vendor") != vendor:
             raise CoordinatorError(f"missing approved gate {stage}/{dimension} before formal approve")
@@ -1518,9 +1534,11 @@ def phase_leave_draft(store: Store, worker: WorkerConfig, task: dict[str, Any], 
                 number=number,
                 head=head,
             )
-    for stage, dimension, vendor in GATE_PAIRS:
+    models = _models(store)
+    for stage, dimension, slot in GATE_PAIRS:
         if stage == "codex-pr" and skip_codex:
             continue
+        vendor = models.for_slot(slot)
         g = latest.get((stage, dimension))
         if g is None or g.get("verdict") != "approved" or g.get("head_sha") != head or g.get("vendor") != vendor:
             raise CoordinatorError(f"missing approved gate {stage}/{dimension} before leave-draft")
