@@ -105,7 +105,9 @@ for worker in workers.values():
   `<first>:reviewer`, `<first>:pr-reviewer-quality`, `<first>:pr-reviewer-logic`,
   `<second>:pr-reviewer-quality`, `<second>:pr-reviewer-logic`. The coordinator
   pins `models` on each task it accepts and refuses `models.first = codex`,
-  because a codex implementer can run commands.
+  because a codex implementer can run commands. A non-default `models` block
+  is part of the execution binding, so changing it stops accepted tasks with
+  "task execution configuration changed" until it is restored.
 - Checkpoints live in `task.payload['coordinator']` and activity `result`
   fields. There is **no** second hub state machine and **no** new store table.
 - `runner` executes `gh`/`git` trusted calls and returns
