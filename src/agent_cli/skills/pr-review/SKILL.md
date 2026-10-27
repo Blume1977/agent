@@ -138,7 +138,7 @@ signed task commit exists
 merges. Full tests and these review gates are Ready requirements, not draft
 publication gates.
 
-A draft plus local tests is not done. Quality and logic of one vendor stage
+A draft plus local tests is not done. Quality and logic of one model-slot stage
 run in parallel on **this** head. The session that authored the diff does not
 sit those reviews. Inner `review-loop` rounds are not these gates. Stay draft
 until both review runs on this head are approved. The first review run is

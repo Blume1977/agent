@@ -3126,3 +3126,40 @@ def test_pr_review_agent_for_claude_feeds_spec_on_stdin(tmp_path: Path) -> None:
     assert "claude" in argv and "--print" in argv
     assert "--setting-sources" in argv and "Bash" in argv[argv.index("--disallowedTools") + 1 :]
     assert "Review this." in (prep.get("stdin_text") or "")
+
+
+
+def test_accepted_task_pins_models_and_phases_use_the_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    _claude_first_manifest(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    fake = FakeGh()
+    patch_account_runners(monkeypatch, fake)
+    patch_execute_github(monkeypatch)
+    patch_run_bounded(monkeypatch, fake)
+    tick(store, worker, runner=fake, lane_runner=lane_runner(fake))
+    tasks = store.rows("task")
+    assert tasks and all(t.get("models") == {"first": "claude", "second": "codex"} for t in tasks)
+
+    # A later device change does not move what the accepted task runs on.
+    from agent_cli import coordinator_lanes
+    from agent_cli.coordinator_runtime import _first_slot_vendor
+
+    path = store.home / "ai-accounts.json"
+    data = json.loads(path.read_text())
+    data["models"] = {"first": "grok", "second": "codex"}
+    path.write_text(json.dumps(data))
+    task = dict(tasks[0])
+    assert _first_slot_vendor(task) == "claude"
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        coordinator_lanes,
+        "phase_pr_gates",
+        lambda *a, vendor, stage, **k: seen.append((vendor, stage)) or [],
+    )
+    coordinator_lanes.phase_pr_gates_grok(store, worker, task, fake, None)
+    coordinator_lanes.phase_pr_gates_codex(store, worker, task, fake, None)
+    assert seen == [("claude", "grok-pr"), ("codex", "codex-pr")]

@@ -526,7 +526,7 @@ The rules below were already implied by §§1–17. They are now explicit so a l
 | Execute tests, builds, and checks, including local tests | Static script on the execution device | Script-produced results supplied to the lanes |
 | Monitor or wait for CI, reviews, merges, and other external events; notify a lane when there is useful work | Static script on the execution device | Script-observed facts, not a waiting or polling model |
 | Spine task state | Spine CLI + local constraints | `task` state, checklist keys, `close-step` / `run` |
-| Whether a head is reviewed | Gate after the two vendor stages | `agent gate record` |
+| Whether a head is reviewed | Gate after the two model-slot stages | `agent gate record` |
 | Whether a command ran and what it returned | The process that ran it | `agent check record` (name, command, `pass`/`fail`/`skip`, output) |
 | Merge | Human | Never a client command |
 

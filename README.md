@@ -78,7 +78,7 @@ agent session stop --id <session-id>
 agent activity add --session <session-id> --type message --payload-file ./mail.json
 agent task create --session <session-id> --workflow implement --title "…"
 agent round start --task <uuid>
-# --vendor is the provider configured for the model slot (ai-accounts.json → models);
+# --vendor is the provider of the model slot, pinned on the task from ai-accounts.json → models;
 # the examples assume models.first = grok. Stage grok-pr is slot first, codex-pr slot second.
 agent agent start --session <session-id> --task <uuid> --role implementer --vendor grok --round 1
 agent agent finish --id <implementer-uuid> --verdict done
