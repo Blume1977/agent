@@ -128,13 +128,7 @@ def preflight_worker(store: Store, worker: WorkerConfig, runner: Runner) -> None
         raise CoordinatorError(str(exc)) from exc
     try:
         ai = load_ai_accounts(store.home)
-        if ai.models.first == "codex":
-            # codex exec --sandbox workspace-write can run shell commands; the
-            # coordinator's implementer must not execute software.
-            raise CoordinatorError(
-                "models.first = codex is not supported by the coordinator: the codex "
-                "implementer lane cannot be restricted from running commands"
-            )
+        _refuse_codex_first(ai.models.first)
         for slot in required_lane_slots(ai.models):
             vendor, role = slot.split(":", 1)
             selected = ai.for_lane(worker.session_id, role, vendor)
@@ -174,15 +168,26 @@ def execution_binding(
     return hashlib.sha256(json.dumps(selected, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+CODEX_FIRST_REFUSED = (
+    "models.first = codex is not supported by the coordinator: the codex "
+    "implementer lane cannot be restricted from running commands"
+)
+
+
+def _refuse_codex_first(first: str) -> None:
+    """codex exec --sandbox workspace-write can run shell commands; the coordinator's
+    implementer must not execute software. Used by preflight, task creation and launch."""
+    if first == "codex":
+        raise CoordinatorError(CODEX_FIRST_REFUSED)
+
+
 def _first_slot_vendor(task: dict[str, Any]) -> str:
     """Provider of model slot ``first``, pinned on the task when it was created."""
     try:
         first = models_from_snapshot(task).first
     except ModelSlotsError as exc:
         raise CoordinatorError(str(exc)) from exc
-    if first == "codex":
-        # Same refusal as preflight, for the pin itself.
-        raise CoordinatorError("models.first = codex is not supported by the coordinator")
+    _refuse_codex_first(first)
     return first
 
 
@@ -274,8 +279,7 @@ def _create_implement_task(
         ai = load_ai_accounts(store.home)
     except AIAccountError as exc:
         raise CoordinatorError(str(exc)) from exc
-    if ai.models.first == "codex":
-        raise CoordinatorError("models.first = codex is not supported by the coordinator")
+    _refuse_codex_first(ai.models.first)
     c = {
         "phase": "accept",
         "source": {
