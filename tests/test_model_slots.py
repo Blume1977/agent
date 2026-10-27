@@ -199,7 +199,7 @@ def test_claude_argv_read_only_and_write_shapes() -> None:
     assert ro[ro.index("--add-dir") + 1] == "/work"
     assert ro[ro.index("--setting-sources") + 1] == "user"
     assert "--strict-mcp-config" in ro
-    assert "--permission-mode" not in ro
+    assert ro[ro.index("--permission-mode") + 1] == "default"
     disallowed = ro[ro.index("--disallowedTools") + 1 :]
     for tool in ("Edit", "Write", "Bash", "Agent", "WebSearch", "WebFetch"):
         assert tool in disallowed

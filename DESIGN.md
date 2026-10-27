@@ -688,8 +688,9 @@ profiles and roles, explicit models/access and session-to-role bindings. It is
 used by lane launches, interactive Grok starts and optional Grok usage reads.
 Its `models` block names the provider of model slot `first` and `second`;
 device-wide `lanes` bind slots for every session. An unset `models` block
-resolves to the historical order `grok`, then `codex` for reading existing
-ledger rows; it authorizes no launch, because lane bindings stay required.
+pins the historical order `grok`, then `codex` on new tasks and is how tasks
+without a pin are read; it authorizes no launch, because lane bindings stay
+required. Task creation and `agent models` read the `models` block.
 Absent configuration authorizes no AI launch. Fixed workflow kinds and the Grok/Codex/Claude
 provider adapters are protocol capabilities, not installed account or role
 selections. A38 visibility lookup uses an explicitly bound GitHub
