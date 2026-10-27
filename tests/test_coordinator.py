@@ -3019,6 +3019,34 @@ def test_execution_binding_unchanged_without_models_block(tmp_path: Path) -> Non
     worker = make_worker(tmp_path)
     repo = next(iter(worker.repositories))
     before = execution_binding(store, worker, repo)
+    # The hash a task accepted before model slots carries: literal six-slot tuple, no models key.
+    import hashlib
+    from dataclasses import asdict
+
+    from agent_cli.ai_accounts import load_ai_accounts
+    from agent_cli.coordinator_runtime import repo_cfg
+    from agent_cli.github_accounts import load_accounts
+
+    legacy_slots = (
+        "grok:implementer",
+        "grok:reviewer",
+        "grok:pr-reviewer-quality",
+        "grok:pr-reviewer-logic",
+        "codex:pr-reviewer-quality",
+        "codex:pr-reviewer-logic",
+    )
+    ai = load_ai_accounts(store.home)
+    github = load_accounts(store.home)
+    legacy = {
+        "repository": asdict(repo_cfg(worker, repo)), "workspace": str(worker.workspace_root),
+        "worker_session": worker.session_id, "review_session": worker.review_session,
+        "reply_logins": worker.reply_logins,
+        "github": [asdict(github.for_session(sid)) for sid in (worker.session_id, worker.review_session)],
+        "lanes": [asdict(ai.for_lane(worker.session_id, s.split(":", 1)[1], s.split(":", 1)[0])) for s in legacy_slots],
+    }
+    assert before == hashlib.sha256(
+        json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     path = store.home / "ai-accounts.json"
     data = json.loads(path.read_text())
     data["models"] = {"first": "grok", "second": "codex"}
@@ -3043,3 +3071,58 @@ def test_preflight_refuses_codex_as_first_model(tmp_path: Path, monkeypatch: pyt
     patch_account_runners(monkeypatch, fake)
     with pytest.raises(CoordinatorError, match="models.first = codex"):
         preflight_worker(store, worker, fake)
+
+
+
+def _claude_first_manifest(home: Path) -> None:
+    path = home / "ai-accounts.json"
+    data = json.loads(path.read_text())
+    data["models"] = {"first": "claude", "second": "codex"}
+    data["accounts"]["claude-w"] = {"provider": "claude", "config_dir": "/test/claude"}
+    data["roles"]["claude-builder"] = {"account": "claude-w", "model": "claude-model", "access": "workspace-write"}
+    data["roles"]["claude-reader"] = {"account": "claude-w", "model": "claude-model", "access": "read-only"}
+    data["lanes"] = {
+        "claude:implementer": "claude-builder",
+        "claude:reviewer": "claude-reader",
+        "claude:pr-reviewer-quality": "claude-reader",
+        "claude:pr-reviewer-logic": "claude-reader",
+    }
+    path.write_text(json.dumps(data))
+
+
+def test_preflight_accepts_claude_first_with_device_lanes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    _claude_first_manifest(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    fake = FakeGh()
+    patch_account_runners(monkeypatch, fake)
+    preflight_worker(store, worker, fake)
+
+
+def test_pr_review_agent_for_claude_feeds_spec_on_stdin(tmp_path: Path) -> None:
+    from agent_cli.coordinator_lanes import _prepare_pr_review_agent
+
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    _claude_first_manifest(store.home)
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    worker = make_worker(tmp_path)
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    task = {
+        "id": "t-claude",
+        "session_id": "worker-session",
+        "models": {"first": "claude", "second": "codex"},
+        "payload": {"coordinator": {"worktree": str(worktree)}},
+    }
+    prep = _prepare_pr_review_agent(
+        store, worker, task, role="pr-reviewer-quality", vendor="claude", head="a" * 40,
+        spec_body="Review this.",
+    )
+    argv = prep["argv"]
+    assert "claude" in argv and "--print" in argv
+    assert "--setting-sources" in argv and "Bash" in argv[argv.index("--disallowedTools") + 1 :]
+    assert "Review this." in (prep.get("stdin_text") or "")
