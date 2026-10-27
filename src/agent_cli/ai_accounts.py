@@ -74,6 +74,14 @@ def _config_dir(value: Any, field: str) -> str:
     return text
 
 
+def _is_default_claude_dir(config_dir: str) -> bool:
+    """True when ``config_dir`` is Claude Code's default profile directory ``~/.claude``."""
+    try:
+        return Path(config_dir).expanduser().resolve() == (Path.home() / ".claude").resolve()
+    except OSError:
+        return False
+
+
 @dataclass(frozen=True)
 class AIAccount:
     name: str
@@ -104,6 +112,14 @@ class AIRole:
         home_var = PROVIDER_HOME_ENV.get(self.account.provider)
         if home_var is None:
             raise AccountError(f"Unsupported provider for role {self.name}")
+        if self.account.provider == "claude" and _is_default_claude_dir(self.account.config_dir):
+            # Claude Code keeps the login of its default profile outside that
+            # directory (``~/.claude.json`` and the keychain entry of the default
+            # profile). Pointing CLAUDE_CONFIG_DIR at ``~/.claude`` would start an
+            # empty, logged-out profile. The default profile is selected by
+            # leaving the variable unset; any other directory is a named profile
+            # the operator logged in with that variable set.
+            return argv
         argv.append(f"{home_var}={self.account.config_dir}")
         return argv
 

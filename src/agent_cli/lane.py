@@ -26,7 +26,7 @@ NPROC_CAP = 800
 # orchestrator's ambient API key or Claude Code session markers.
 GROK_STRIP_ENV = ("ANTHROPIC_API_KEY", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 _CLAUDE_READ_TOOLS = ("Read", "Grep", "Glob")
-_CLAUDE_WRITE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+_CLAUDE_WRITE_TOOLS = ("Edit", "Write", "NotebookEdit")
 # Never for a lane: executing software, spawning subagents, reaching the web.
 _CLAUDE_FORBIDDEN_TOOLS = ("Bash", "Agent", "Task", "WebSearch", "WebFetch")
 STATUS_VALUES = ("complete", "partial", "timeout", "unavailable")

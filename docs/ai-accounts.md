@@ -96,7 +96,11 @@ Each account requires:
 - `provider`: `grok`, `codex` or `claude`
 - `config_dir`: absolute path to that profile's provider CLI configuration
   directory (no NUL, newline, CR, or parent traversal); for `claude` this is
-  the directory the `CLAUDE_CONFIG_DIR` variable points to
+  the directory the `CLAUDE_CONFIG_DIR` variable points to. The default
+  profile is `~/.claude`: Claude Code keeps its login outside that directory,
+  so for exactly this path the lane leaves `CLAUDE_CONFIG_DIR` unset instead of
+  pointing it there. Any other directory is a named profile the operator logged
+  in with `CLAUDE_CONFIG_DIR=<dir> claude auth login`.
 
 Each role requires:
 
