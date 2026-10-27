@@ -14,7 +14,7 @@ and bounded model lanes on the execution device. It never merges.
 | CLI / daemon | `agent coordinate --session ID` advances one worker; `--follow` is the script loop. The daemon starts explicitly configured workers on startup. Changes to existing workers are read each tick; changes to the daemon worker set require restart. Legacy assignment dispatch and `supervise` refuse these sessions. |
 | Operator accounts, roles, `check_argv`, `readiness_argv`, workspace roots | **Never installed automatically.** Operators add them explicitly. |
 | End-to-end deployment on a named host | Not claimed. Deployment hostnames stay out of this public repository. |
-| Universal sandbox / forced model isolation | **Not claimed.** Grok implementer argv denies Bash/subagents/web-search; that is process argv hardening only. |
+| Universal sandbox / forced model isolation | **Not claimed.** The implementer argv depends on the first-slot provider: Grok denies Bash/subagents/web-search; Claude allows only read and edit tools, disallows Bash, Agent, Task and the web, and runs with `--setting-sources user` and `--strict-mcp-config`; Codex is refused as slot `first`. That is process argv hardening only. |
 
 Distinguish a requirement (DESIGN §19.7), an implemented module, and a verified
 deployment. This document does not invent evidence that a device is running the
@@ -114,9 +114,12 @@ for worker in workers.values():
 - `lane_runner(argv, stdin)` is optional. When omitted, lanes and trusted
   argv lists run via a Python bounded subprocess (process-group kill on
   timeout), preserving stdin and cwd. External `timeout(1)` is **not** used
-  (absent on stock macOS). Tests inject fakes. Grok implementer argv is
-  hardened with `--deny Bash`, `--no-subagents`, and `--disable-web-search`.
-  This is process argv hardening, **not** universal sandbox enforcement.
+  (absent on stock macOS). Tests inject fakes. The implementer argv
+  is hardened per first-slot provider: Grok with `--deny Bash`,
+  `--no-subagents`, and `--disable-web-search`; Claude with read and edit tools
+  only, Bash, Agent, Task and the web disallowed, `--setting-sources user` and
+  `--strict-mcp-config`; Codex is refused as slot `first`. This is process argv
+  hardening, **not** universal sandbox enforcement.
 - Environment context for trusted `check_argv` / `readiness_argv` (set in the
   child environment, with cwd = worktree):
   `AGENT_COORDINATOR_HEAD`, `AGENT_COORDINATOR_BASE`, `AGENT_COORDINATOR_REPO`,

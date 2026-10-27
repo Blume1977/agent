@@ -22,6 +22,7 @@ from .model_slots import (
 from .store import StoreError
 
 CONFIG_FILE = "ai-accounts.json"
+TOP_LEVEL_KEYS = frozenset({"accounts", "roles", "sessions", "usage_session", "models", "lanes"})
 # Provider CLI configuration-directory variable per supported provider.
 PROVIDER_HOME_ENV = {
     "grok": "GROK_HOME",
@@ -181,8 +182,7 @@ def load_ai_accounts(home: Path) -> AIAccounts:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
         raise AccountError(f"Cannot read {CONFIG_FILE}") from exc
-    allowed_keys = {"accounts", "roles", "sessions", "usage_session", "models", "lanes"}
-    if not isinstance(raw, dict) or set(raw) - allowed_keys:
+    if not isinstance(raw, dict) or set(raw) - TOP_LEVEL_KEYS:
         raise AccountError(
             f"{CONFIG_FILE} accepts only accounts, roles, sessions, usage_session, models, and lanes"
         )
@@ -305,8 +305,10 @@ def load_model_slots(home: Path) -> ModelSlots:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
         raise AccountError(f"Cannot read {CONFIG_FILE}") from exc
-    if not isinstance(raw, dict):
-        raise AccountError(f"{CONFIG_FILE} must be an object")
+    if not isinstance(raw, dict) or set(raw) - TOP_LEVEL_KEYS:
+        raise AccountError(
+            f"{CONFIG_FILE} accepts only accounts, roles, sessions, usage_session, models, and lanes"
+        )
     try:
         return parse_model_slots(raw.get("models"))
     except ModelSlotsError as exc:
