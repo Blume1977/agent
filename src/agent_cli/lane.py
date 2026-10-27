@@ -139,6 +139,11 @@ def claude_argv(*, cwd: str, write: bool, model: str) -> list[str]:
             "text",
             "--add-dir",
             cwd,
+            # Only the user's own settings: a worktree's .claude/settings.json
+            # (hooks run shell commands) and .mcp.json must not reach a lane.
+            "--setting-sources",
+            "user",
+            "--strict-mcp-config",
         ]
     )
     if write:

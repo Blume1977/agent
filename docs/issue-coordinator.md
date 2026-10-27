@@ -103,7 +103,9 @@ for worker in workers.values():
 - Required AI slots, with `<first>` / `<second>` the providers of the device's
   model slots (`ai-accounts.json` → `models`): `<first>:implementer`,
   `<first>:reviewer`, `<first>:pr-reviewer-quality`, `<first>:pr-reviewer-logic`,
-  `<second>:pr-reviewer-quality`, `<second>:pr-reviewer-logic`.
+  `<second>:pr-reviewer-quality`, `<second>:pr-reviewer-logic`. The coordinator
+  pins `models` on each task it accepts and refuses `models.first = codex`,
+  because a codex implementer can run commands.
 - Checkpoints live in `task.payload['coordinator']` and activity `result`
   fields. There is **no** second hub state machine and **no** new store table.
 - `runner` executes `gh`/`git` trusted calls and returns

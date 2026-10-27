@@ -15,7 +15,6 @@ from agent_cli.coordinator_common import (
     REQUIRED_LANE_SLOTS,
     checklist_key_for_stage,
     required_lane_slots,
-    stage_for_vendor,
 )
 from agent_cli.lane import claude_argv, launch, provider_argv
 from agent_cli.main import main
@@ -198,6 +197,8 @@ def test_claude_argv_read_only_and_write_shapes() -> None:
     assert "claude" in ro and "--print" in ro
     assert ro[ro.index("--model") + 1] == CLAUDE_MODEL
     assert ro[ro.index("--add-dir") + 1] == "/work"
+    assert ro[ro.index("--setting-sources") + 1] == "user"
+    assert "--strict-mcp-config" in ro
     assert "--permission-mode" not in ro
     disallowed = ro[ro.index("--disallowedTools") + 1 :]
     for tool in ("Edit", "Write", "Bash", "Agent", "WebSearch", "WebFetch"):
@@ -337,10 +338,6 @@ def test_coordinator_slot_helpers() -> None:
         "codex:pr-reviewer-logic",
     )
     assert REQUIRED_LANE_SLOTS == required_lane_slots(DEFAULT_MODEL_SLOTS)
-    assert stage_for_vendor(models, "claude") == "grok-pr"
-    assert stage_for_vendor(models, "codex") == "codex-pr"
-    with pytest.raises(ValueError):
-        stage_for_vendor(models, "grok")
     assert checklist_key_for_stage("grok-pr", "quality") == "grok_pr_quality"
     assert checklist_key_for_stage("codex-pr", "logic") == "codex_pr_logic"
 
@@ -504,3 +501,14 @@ def test_models_configured_flag_only_for_an_explicit_block(tmp_path: Path) -> No
     loaded = load_ai_accounts(tmp_path)
     assert loaded.models_configured is False
     assert loaded.models == DEFAULT_MODEL_SLOTS
+
+
+@pytest.mark.no_pg
+def test_load_model_slots_ignores_unrelated_manifest_errors(tmp_path: Path) -> None:
+    write_claude_first(tmp_path)
+    raw = json.loads((tmp_path / "ai-accounts.json").read_text(encoding="utf-8"))
+    raw["sessions"] = {"s": {"interactive": None, "lanes": {"claude:implementer": "nobody"}}}
+    (tmp_path / "ai-accounts.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(AccountError):
+        load_ai_accounts(tmp_path)
+    assert load_model_slots(tmp_path) == ModelSlots("claude", "codex")

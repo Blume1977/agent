@@ -85,7 +85,21 @@ names and now mean the slot, not a provider: gate stages `grok-pr` (slot
 `codex_pr_*`, coordinator phases `pr_gates_grok` and `pr_gates_codex`. A device
 without a `models` block keeps the historical order `grok`, then `codex`.
 
-`agent agent start --role reviewer --vendor X` requires `X` to be `models.first`;
+A task pins the device's `models` when it is created (`task create`, the issue
+coordinator, error-fix tasks). Every later check for that task (`agent start`,
+`gate record`, `allow`, `next`, `run`, the coordinator gates) uses the pinned
+value, so changing `models` affects new tasks only. Tasks without a pin keep
+`grok`, then `codex`.
+
+The issue coordinator refuses `models.first = codex`: its implementer must not
+execute software, and the codex lane (`codex exec --sandbox workspace-write`)
+cannot be kept from running commands. `agent lane run` and `agent run` accept it.
+
+The `claude` adapter runs with `--setting-sources user` and `--strict-mcp-config`,
+so a worktree's `.claude/settings.json` hooks and `.mcp.json` never reach a lane.
+
+`agent agent start --role reviewer --vendor X` requires `X` to be `models.first`
+pinned on the task;
 `--role implementer` accepts the provider of either slot (the chain leaves the
 implementer unpinned, the coordinator uses `models.first`); `agent gate record
 --stage S --vendor X` requires `X` to be the provider of the slot `S` stands for.

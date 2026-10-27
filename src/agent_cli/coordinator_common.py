@@ -35,14 +35,6 @@ def required_lane_slots(models: ModelSlots) -> tuple[str, ...]:
     return tuple(slots)
 
 
-def stage_for_vendor(models: ModelSlots, vendor: str) -> str:
-    """Gate stage (historical slot name) that this provider fills on this device."""
-    slot = models.slot_of(vendor)
-    if slot is None:
-        raise ValueError(f"vendor {vendor} is not a configured model slot")
-    return SLOT_STAGES[slot]
-
-
 def checklist_key_for_stage(stage: str, dimension: str) -> str:
     """Checklist key of a PR gate: historical slot prefix plus dimension."""
     return f"{SLOT_KEY_PREFIXES[STAGE_SLOTS[stage]]}{dimension}"
