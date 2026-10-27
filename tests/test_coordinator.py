@@ -2202,6 +2202,9 @@ def _seed_ready_side_task(
     codex_gates: tuple[str, ...] = (),
     seed_formal_review: bool = False,
     extra_evidence: dict[str, Any] | None = None,
+    models: dict[str, str] | None = None,
+    first_vendor: str = "grok",
+    second_vendor: str = "codex",
 ) -> dict[str, Any]:
     from agent_cli.allow import CHECKLIST_KEYS
 
@@ -2251,6 +2254,7 @@ def _seed_ready_side_task(
             "updated_at": "2026-01-01T00:00:00Z",
             "change_summary_en": "Implemented example/project#7.",
             "change_summary_de": "Umsetzung von example/project#7.",
+            **({"models": models} if models is not None else {}),
         },
     )
     for key in CHECKLIST_KEYS["implement"]:
@@ -2284,9 +2288,9 @@ def _seed_ready_side_task(
         )
     gates: list[tuple[str, str, str]] = []
     for dim in grok_gates:
-        gates.append(("grok-pr", dim, "grok"))
+        gates.append(("grok-pr", dim, first_vendor))
     for dim in codex_gates:
-        gates.append(("codex-pr", dim, "codex"))
+        gates.append(("codex-pr", dim, second_vendor))
     for stage, dim, vendor in gates:
         gid = f"{tid}-g-{stage}-{dim}"
         store.write(
@@ -3172,16 +3176,23 @@ def test_accepted_task_pins_models_and_phases_use_the_pin(tmp_path: Path, monkey
 
 
 
-def test_readiness_gate_check_uses_the_pinned_providers() -> None:
-    """The readiness/approve/leave-draft loops compare gate vendors with the task pin."""
-    from agent_cli.allow import GATE_PAIRS
-    from agent_cli.coordinator_github import _task_models
+def test_readiness_uses_the_providers_pinned_on_the_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phase_readiness compares gate vendors with the task pin, not the device or fixed names."""
+    store, worker, fake = _ready_side_env(tmp_path, monkeypatch)
+    pinned = {"first": "claude", "second": "codex"}
+    task = _seed_ready_side_task(
+        store, worker, fake, tid="aa000001-0000-4000-8000-0000000000c1", phase="readiness",
+        checklist_codex={}, codex_gates=("quality", "logic"), models=pinned, first_vendor="claude",
+    )
+    lines = phase_readiness(store, worker, task, fake)
+    assert any(f"readiness ok on {fake.head[:7]}" in line for line in lines)
 
-    task = {"models": {"first": "claude", "second": "codex"}}
-    models = _task_models(task)
-    good = {("grok-pr", d): {"vendor": "claude"} for d in ("quality", "logic")}
-    good.update({("codex-pr", d): {"vendor": "codex"} for d in ("quality", "logic")})
-    assert all(good[(stage, dim)]["vendor"] == models.for_slot(slot) for stage, dim, slot in GATE_PAIRS)
-    bad = dict(good)
-    bad[("grok-pr", "quality")] = {"vendor": "grok"}
-    assert not all(bad[(stage, dim)]["vendor"] == models.for_slot(slot) for stage, dim, slot in GATE_PAIRS)
+    task = _seed_ready_side_task(
+        store, worker, fake, tid="aa000001-0000-4000-8000-0000000000c2", phase="readiness",
+        checklist_codex={}, codex_gates=("quality", "logic"), models=pinned, first_vendor="grok",
+    )
+    with pytest.raises(CoordinatorError, match="missing approved gate grok-pr/"):
+        phase_readiness(store, worker, task, fake)
+
