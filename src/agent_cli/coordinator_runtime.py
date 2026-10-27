@@ -19,6 +19,7 @@ from uuid import NAMESPACE_URL, uuid5
 from .a38_review import COMPLIANCE_PROMPT
 from .ai_accounts import AccountError as AIAccountError
 from .ai_accounts import load_ai_accounts
+from .model_slots import ModelSlotsError, models_from_snapshot
 from .allow import CHECKLIST_KEYS
 from .coordinator_common import (
     REQUIRED_LANE_SLOTS,
@@ -127,6 +128,13 @@ def preflight_worker(store: Store, worker: WorkerConfig, runner: Runner) -> None
         raise CoordinatorError(str(exc)) from exc
     try:
         ai = load_ai_accounts(store.home)
+        if ai.models.first == "codex":
+            # codex exec --sandbox workspace-write can run shell commands; the
+            # coordinator's implementer must not execute software.
+            raise CoordinatorError(
+                "models.first = codex is not supported by the coordinator: the codex "
+                "implementer lane cannot be restricted from running commands"
+            )
         for slot in required_lane_slots(ai.models):
             vendor, role = slot.split(":", 1)
             selected = ai.for_lane(worker.session_id, role, vendor)
@@ -152,18 +160,20 @@ def execution_binding(store: Store, worker: WorkerConfig, repo: str) -> str:
         "worker_session": worker.session_id, "review_session": worker.review_session,
         "reply_logins": worker.reply_logins,
         "github": [asdict(github.for_session(sid)) for sid in (worker.session_id, worker.review_session)],
-        "models": ai.models.as_dict(),
+        # Only an explicit models block enters the hash, so a device without one
+        # keeps the binding hash of tasks accepted before model slots existed.
+        **({"models": ai.models.as_dict()} if ai.models_configured else {}),
         "lanes": [asdict(ai.for_lane(worker.session_id, slot.split(":", 1)[1], slot.split(":", 1)[0]))
                   for slot in required_lane_slots(ai.models)],
     }
     return hashlib.sha256(json.dumps(selected, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _first_slot_vendor(store: Store) -> str:
-    """Provider configured for model slot ``first`` on this device."""
+def _first_slot_vendor(task: dict[str, Any]) -> str:
+    """Provider of model slot ``first``, pinned on the task when it was created."""
     try:
-        return load_ai_accounts(store.home).models.first
-    except AIAccountError as exc:
+        return models_from_snapshot(task).first
+    except ModelSlotsError as exc:
         raise CoordinatorError(str(exc)) from exc
 
 
@@ -289,6 +299,7 @@ def _create_implement_task(
             "payload": {"coordinator": c, "source_issue": {"repo": repo, "number": number}},
             "state": "open",
             "current_round": 0,
+            "models": load_ai_accounts(store.home).models.as_dict(),
             "created_at": utcnow(),
             "updated_at": utcnow(),
             "change_summary_en": None,
@@ -919,7 +930,7 @@ def phase_implement(
             draft_lines=[],
         )
 
-    first_vendor = _first_slot_vendor(store)
+    first_vendor = _first_slot_vendor(task)
     agent, result = launch_lane(
         store,
         worker,
@@ -1083,7 +1094,7 @@ def phase_inner_review(
         worker,
         task,
         role="reviewer",
-        vendor=_first_slot_vendor(store),
+        vendor=_first_slot_vendor(task),
         round_num=round_num,
         spec_body=_spec_context(
             c,

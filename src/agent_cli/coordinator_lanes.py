@@ -31,9 +31,9 @@ from .coordinator_common import (
 from .coordinator_config import WorkerConfig
 from .coordinator_exec import run_bounded
 from .coordinator_git import execute_github, queue_activity, verify_signed_clean_head, verify_checkout_identity
-from .coordinator_common import checklist_key_for_stage, stage_for_vendor
+from .coordinator_common import checklist_key_for_stage
 from .lane import OUTPUT_FILE_VENDORS, SPEC_VIA_STDIN, LaneResult, provider_argv
-from .model_slots import SLOT_STAGES
+from .model_slots import SLOT_STAGES, ModelSlots, ModelSlotsError, models_from_snapshot
 from .store import Store, utcnow
 
 _IMPLEMENTER_RESULTS = frozenset({"done", "ask", "blocked", "no-change"})
@@ -398,6 +398,7 @@ def checklist_snapshot(store: Store, task: dict[str, Any]) -> dict[str, Any]:
         "checklist": checklist,
         "agents": agents,
         "gates": gates,
+        "models": _task_models(task).as_dict(),
         "local_checks": local_checks,
         "implementer_verdict": implementer_verdict,
         "reviewer_verdict": reviewer_verdict,
@@ -1108,6 +1109,14 @@ def phase_pr_gates(
     return lines
 
 
+def _task_models(task: dict[str, Any]) -> ModelSlots:
+    """Model slots pinned on the task (historical order for tasks without a pin)."""
+    try:
+        return models_from_snapshot(task)
+    except ModelSlotsError as exc:
+        raise CoordinatorError(str(exc)) from exc
+
+
 def _phase_pr_gates_slot(
     store: Store,
     worker: WorkerConfig,
@@ -1116,10 +1125,7 @@ def _phase_pr_gates_slot(
     lane_runner: LaneRunner | None,
     slot: str,
 ) -> list[str]:
-    try:
-        models = load_ai_accounts(store.home).models
-    except AIAccountError as exc:
-        raise CoordinatorError(str(exc)) from exc
+    models = _task_models(task)
     return phase_pr_gates(
         store,
         worker,

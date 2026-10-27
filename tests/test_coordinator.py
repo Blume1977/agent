@@ -3008,3 +3008,38 @@ def test_pr_review_scope_keeps_the_compliance_reminder_and_states_a_missing_issu
     assert "and the linked issue" in logic
     assert "Quality:" in quality
     assert "Logic:" in logic
+
+
+def test_execution_binding_unchanged_without_models_block(tmp_path: Path) -> None:
+    """A device without a models block keeps the hash of tasks accepted before model slots."""
+    from agent_cli.coordinator_runtime import execution_binding
+
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    worker = make_worker(tmp_path)
+    repo = next(iter(worker.repositories))
+    before = execution_binding(store, worker, repo)
+    path = store.home / "ai-accounts.json"
+    data = json.loads(path.read_text())
+    data["models"] = {"first": "grok", "second": "codex"}
+    path.write_text(json.dumps(data))
+    assert execution_binding(store, worker, repo) != before
+    data.pop("models")
+    path.write_text(json.dumps(data))
+    assert execution_binding(store, worker, repo) == before
+
+
+def test_preflight_refuses_codex_as_first_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Store(tmp_path)
+    write_accounts(store.home)
+    path = store.home / "ai-accounts.json"
+    data = json.loads(path.read_text())
+    data["models"] = {"first": "codex", "second": "grok"}
+    path.write_text(json.dumps(data))
+    make_session(store, "worker-session", ["spine", "review-loop", "pr-review"])
+    make_session(store, "review-session", ["pr-review"])
+    worker = make_worker(tmp_path)
+    fake = FakeGh()
+    patch_account_runners(monkeypatch, fake)
+    with pytest.raises(CoordinatorError, match="models.first = codex"):
+        preflight_worker(store, worker, fake)

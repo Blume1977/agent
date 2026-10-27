@@ -85,9 +85,10 @@ names and now mean the slot, not a provider: gate stages `grok-pr` (slot
 `codex_pr_*`, coordinator phases `pr_gates_grok` and `pr_gates_codex`. A device
 without a `models` block keeps the historical order `grok`, then `codex`.
 
-`agent agent start --role implementer|reviewer --vendor X` requires `X` to be
-`models.first`; `agent gate record --stage S --vendor X` requires `X` to be the
-provider of the slot `S` stands for.
+`agent agent start --role reviewer --vendor X` requires `X` to be `models.first`;
+`--role implementer` accepts the provider of either slot (the chain leaves the
+implementer unpinned, the coordinator uses `models.first`); `agent gate record
+--stage S --vendor X` requires `X` to be the provider of the slot `S` stands for.
 
 ## Required fields
 

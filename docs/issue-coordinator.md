@@ -202,10 +202,10 @@ for worker in workers.values():
    `pr_gates_codex` and a pinned `question_activity_id` — not a rejected
    complete gate and not an implementer fix loop. Rejections publish
    `review.post` **COMMENT** (not `REQUEST_CHANGES`) and invalidate
-   head-specific evidence. A successful Codex lane still starts when the
+   head-specific evidence. A successful second-slot lane still starts when the
    checklist keys are `n_a`. It replaces `n_a` with `ja` for
    `codex_pr_quality` and `codex_pr_logic`, including on a later tick whose
-   gate is already approved. After `ja`, both Codex gates are required again.
+   gate is already approved. After `ja`, both second-slot gates are required again.
    `n_a` alone does not grant Ready or done. One review is enough only when
    the pull request opener is listed in one_review_authors in the trusted
    .github/pr-guard.json on the default branch. A missing file, a missing
@@ -241,7 +241,7 @@ for worker in workers.values():
    **after** the command, re-observe CI fresh (no stale `ci_green`), unchanged PR
    head, author/base/mergeability, tests, and all four same-head gates. The two
    `codex-pr` gates are omitted on readiness, formal approve, and leave-draft
-   only when both Codex checklist keys are already `n_a`, the evidence is
+   only when both `codex_pr_*` checklist keys (historical names of slot `second`) are already `n_a`, the evidence is
    exactly `second review not posted`, and the opener is listed in
    one_review_authors in the trusted .github/pr-guard.json on the default
    branch. A missing file, a missing key, or an empty list keeps all four
