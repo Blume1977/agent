@@ -295,8 +295,9 @@ def load_ai_accounts(home: Path) -> AIAccounts:
 def load_model_slots(home: Path) -> ModelSlots:
     """The device's model slot configuration (historical order when unset).
 
-    Reads only the top-level ``models`` block, so an unrelated error elsewhere in
-    the manifest does not stop task creation; launches still validate the whole file.
+    Checks the file is readable JSON with known top-level keys and parses the
+    ``models`` block; errors inside ``accounts``, ``roles``, ``sessions`` or
+    ``lanes`` do not stop task creation. Launches still validate the whole file.
     """
     path = home / CONFIG_FILE
     if not path.exists():

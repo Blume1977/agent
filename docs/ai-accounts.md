@@ -13,8 +13,9 @@ pairing, or built-in defaults.
 This device-local manifest is used by `agent lane run`, the lane steps of
 `agent run`, interactive Grok session starts, optional Grok usage polling,
 and, for its `models` block only, by every task creation (`agent task create`,
-the issue coordinator, error-fix tasks) and `agent models`; a malformed `models`
-block therefore stops task creation.
+the issue coordinator, error-fix tasks) and `agent models`; an unreadable file, an
+unknown top-level key or a malformed `models` block therefore stops task
+creation; errors inside `accounts`, `roles`, `sessions` or `lanes` do not.
 It does not implement the complete issue-to-PR coordinator or a sandbox.
 
 The following is an **operator-supplied example**, never an installed default.

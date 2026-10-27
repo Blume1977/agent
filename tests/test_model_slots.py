@@ -532,7 +532,28 @@ def test_claude_lane_in_tmux_redirects_the_spec_file(tmp_path: Path) -> None:
         inner = argv[argv.index("--") + 1 :]
         assert inner[:5] == ["sh", "-c", 'f=$1; shift; exec "$@" < "$f"', "sh", str(spec.resolve())]
         assert "claude" in inner and "--print" in inner
-    assert seen["stdin"] is None
+    # Without an injected runner the tmux holder must not type the spec into the pane.
+    import agent_cli.lane as lane_mod
+
+    captured: dict = {}
+
+    def fake_tmux(inner, *, name, cwd, stdin_text):  # type: ignore[no-untyped-def]
+        captured["inner"], captured["stdin"] = inner, stdin_text
+        from subprocess import CompletedProcess
+
+        return CompletedProcess(inner, 0, "STATUS: complete\n", "")
+
+    orig = lane_mod._run_in_tmux
+    lane_mod._run_in_tmux = fake_tmux
+    try:
+        launch(
+            role="implementer", vendor="claude", spec_file=str(spec), cwd=str(tmp_path),
+            runner=None, dry_run=False, tmux=True, config_home=tmp_path, session_id="s",
+        )
+    finally:
+        lane_mod._run_in_tmux = orig
+    assert captured["stdin"] is None
+    assert captured["inner"][:2] == ["sh", "-c"]
 
 
 def test_gates_follow_a_non_default_pin(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
