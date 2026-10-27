@@ -291,7 +291,7 @@ for worker in workers.values():
    set Ready. If the opener is no longer listed, it posts a new comment that
    Ready was not set and does not call `gh pr ready`. The same correction is
    posted on a later leave-draft when that one-review evidence comment is
-   already done, both Codex keys are still `n_a` with evidence exactly
+   already done, both `codex_pr_*` checklist keys (slot `second`) are still `n_a` with evidence exactly
    `second review not posted`, and the live list no longer grants the
    exception, before the gate check can hide it. A transport failure on that
    later read retries and does not set Ready. A later leave-draft that
