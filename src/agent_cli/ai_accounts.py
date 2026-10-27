@@ -142,8 +142,6 @@ class AIAccounts:
     models: ModelSlots = DEFAULT_MODEL_SLOTS
     # Device-wide lane bindings (slot → role) used when a session binds none.
     lanes: dict[str, str] = field(default_factory=dict)
-    # True only when the manifest contains a ``models`` block (not the default).
-    models_configured: bool = False
 
     def for_lane(self, session_id: str, role: str, vendor: str) -> AIRole:
         slot = f"{vendor}:{role}"
@@ -291,7 +289,6 @@ def load_ai_accounts(home: Path) -> AIAccounts:
         usage_session,
         models,
         device_lanes,
-        raw.get("models") is not None,
     )
 
 

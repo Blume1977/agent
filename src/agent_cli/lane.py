@@ -347,9 +347,15 @@ def launch(
     argv = [*selected.env_prefix(), *argv]
 
     tmux_session: str | None = None
+    claude_redirect = False
     if tmux:
         unique = "" if dry_run else uuid.uuid4().hex[:8]
         tmux_session = lane_tmux_name(vendor=vendor, role=role, unique=unique)
+        if vendor == "claude":
+            # claude --print reads the prompt from stdin only when stdin is not a
+            # TTY; in a tmux pane it is. Redirect the spec file instead of typing it.
+            argv = ["sh", "-c", 'f=$1; shift; exec "$@" < "$f"', "sh", spec_file, *argv]
+            claude_redirect = True
         argv = tmux_wrap_argv(argv, name=tmux_session, cwd=cwd)
 
     if dry_run:
@@ -365,15 +371,7 @@ def launch(
         )
 
     stdin_text: str | None = spec_text if vendor in SPEC_VIA_STDIN else None
-    if tmux and vendor == "claude" and tmux_session is not None:
-        # claude --print reads the prompt from stdin only when stdin is not a
-        # TTY; in a tmux pane it is. Redirect the spec file instead of typing it.
-        inner = argv[argv.index("--") + 1 :]
-        argv = tmux_wrap_argv(
-            ["sh", "-c", 'f=$1; shift; exec "$@" < "$f"', "sh", spec_file, *inner],
-            name=tmux_session,
-            cwd=cwd,
-        )
+    if claude_redirect:
         stdin_text = None
     try:
         if runner is not None:

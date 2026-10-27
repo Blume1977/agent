@@ -490,20 +490,6 @@ def test_task_pins_models_at_create(tmp_path: Path, capsys: pytest.CaptureFixtur
 
 
 @pytest.mark.no_pg
-def test_models_configured_flag_only_for_an_explicit_block(tmp_path: Path) -> None:
-    assert load_ai_accounts(tmp_path).models_configured is False
-    write_claude_first(tmp_path)
-    assert load_ai_accounts(tmp_path).models_configured is True
-    raw = json.loads((tmp_path / "ai-accounts.json").read_text(encoding="utf-8"))
-    raw.pop("models")
-    raw["lanes"] = {}
-    (tmp_path / "ai-accounts.json").write_text(json.dumps(raw), encoding="utf-8")
-    loaded = load_ai_accounts(tmp_path)
-    assert loaded.models_configured is False
-    assert loaded.models == DEFAULT_MODEL_SLOTS
-
-
-@pytest.mark.no_pg
 def test_load_model_slots_ignores_unrelated_manifest_errors(tmp_path: Path) -> None:
     write_claude_first(tmp_path)
     raw = json.loads((tmp_path / "ai-accounts.json").read_text(encoding="utf-8"))
@@ -522,3 +508,65 @@ def test_lane_run_rejects_a_missing_cwd(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="--cwd is not a directory"):
         _run(tmp_path, ["lane", "run", "--role", "implementer", "--vendor", "claude", "--session", "s",
                         "--spec-file", str(spec), "--cwd", str(tmp_path / "missing"), "--no-tmux"])
+
+
+
+@pytest.mark.no_pg
+def test_claude_lane_in_tmux_redirects_the_spec_file(tmp_path: Path) -> None:
+    write_claude_first(tmp_path)
+    spec = tmp_path / "spec.md"
+    spec.write_text("implement this\n", encoding="utf-8")
+    seen: dict = {}
+
+    def runner(argv: list[str], stdin_text: str | None):
+        seen["argv"], seen["stdin"] = argv, stdin_text
+        return type("Done", (), {"returncode": 0, "stdout": "STATUS: complete\n", "stderr": ""})()
+
+    for dry in (True, False):
+        result = launch(
+            role="implementer", vendor="claude", spec_file=str(spec), cwd=str(tmp_path),
+            runner=None if dry else runner, dry_run=dry, tmux=True, config_home=tmp_path,
+            session_id="s",
+        )
+        argv = result.argv
+        inner = argv[argv.index("--") + 1 :]
+        assert inner[:5] == ["sh", "-c", 'f=$1; shift; exec "$@" < "$f"', "sh", str(spec.resolve())]
+        assert "claude" in inner and "--print" in inner
+    assert seen["stdin"] is None
+
+
+def test_gates_follow_a_non_default_pin(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """codex-pr needs claude grok-pr gates on a claude-first task; gate-blocked recovers on them."""
+    write_claude_first(tmp_path)
+    tid = _task(tmp_path, capsys)
+
+    def finished(role: str, vendor: str) -> str:
+        _run(tmp_path, ["agent", "start", "--session", "s", "--task", tid, "--role", role, "--vendor", vendor])
+        aid = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("agent ")][-1].split()[1]
+        _run(tmp_path, ["agent", "finish", "--id", aid, "--verdict", "approved"])
+        capsys.readouterr()
+        return aid
+
+    head = "abcdef0"
+    for dim in ("quality", "logic"):
+        aid = finished(f"pr-reviewer-{dim}", "claude")
+        _run(tmp_path, ["gate", "record", "--task", tid, "--stage", "grok-pr", "--dimension", dim, "--vendor", "claude", "--verdict", "approved", "--head", head, "--agent", aid])
+    _run(tmp_path, ["task", "state", tid, "pr-review"])
+    q = finished("pr-reviewer-quality", "codex")
+    _run(tmp_path, ["gate", "record", "--task", tid, "--stage", "codex-pr", "--dimension", "quality", "--vendor", "codex", "--verdict", "unavailable", "--head", head, "--agent", q, "--evidence", "cli down"])
+    from agent_cli.main import open_store
+
+    os.environ["AGENT_HOME"] = str(tmp_path)
+    store = open_store()
+    try:
+        assert store.row("task", tid)["state"] == "gate-blocked"
+    finally:
+        store.close()
+    for dim in ("quality", "logic"):
+        aid = finished(f"pr-reviewer-{dim}", "codex")
+        _run(tmp_path, ["gate", "record", "--task", tid, "--stage", "codex-pr", "--dimension", dim, "--vendor", "codex", "--verdict", "approved", "--head", head, "--agent", aid])
+    store = open_store()
+    try:
+        assert store.row("task", tid)["state"] == "pr-review"
+    finally:
+        store.close()

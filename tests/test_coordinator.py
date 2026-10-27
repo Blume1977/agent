@@ -3169,3 +3169,19 @@ def test_accepted_task_pins_models_and_phases_use_the_pin(tmp_path: Path, monkey
     coordinator_lanes.phase_pr_gates_grok(store, worker, task, fake, None)
     coordinator_lanes.phase_pr_gates_codex(store, worker, task, fake, None)
     assert seen == [("claude", "grok-pr"), ("codex", "codex-pr")]
+
+
+
+def test_readiness_gate_check_uses_the_pinned_providers() -> None:
+    """The readiness/approve/leave-draft loops compare gate vendors with the task pin."""
+    from agent_cli.allow import GATE_PAIRS
+    from agent_cli.coordinator_github import _task_models
+
+    task = {"models": {"first": "claude", "second": "codex"}}
+    models = _task_models(task)
+    good = {("grok-pr", d): {"vendor": "claude"} for d in ("quality", "logic")}
+    good.update({("codex-pr", d): {"vendor": "codex"} for d in ("quality", "logic")})
+    assert all(good[(stage, dim)]["vendor"] == models.for_slot(slot) for stage, dim, slot in GATE_PAIRS)
+    bad = dict(good)
+    bad[("grok-pr", "quality")] = {"vendor": "grok"}
+    assert not all(bad[(stage, dim)]["vendor"] == models.for_slot(slot) for stage, dim, slot in GATE_PAIRS)
