@@ -123,6 +123,16 @@ def test_manifest_models_and_device_lanes(tmp_path: Path) -> None:
     assert implementer.name == "first-builder"
     assert implementer.env_prefix()[-1] == f"CLAUDE_CONFIG_DIR={CLAUDE_DIR}"
     assert "-u" in implementer.env_prefix() and "CLAUDE_CONFIG_DIR" in implementer.env_prefix()
+    # The default profile ~/.claude keeps its login outside the directory: the
+    # lane clears CLAUDE_CONFIG_DIR and does not point it there.
+    from agent_cli.ai_accounts import AIAccount, AIRole
+
+    default_role = AIRole(
+        "d", AIAccount("c", "claude", str(Path.home() / ".claude")), "m", "read-only"
+    )
+    prefix = default_role.env_prefix()
+    assert prefix[-2:] == ["-u", "CLAUDE_CONFIG_DIR"]
+    assert not any(a.startswith("CLAUDE_CONFIG_DIR=") for a in prefix)
     second = loaded.for_lane("never-bound-session", "pr-reviewer-logic", "codex")
     assert second.env_prefix()[-1] == f"CODEX_HOME={CODEX_DIR}"
     with pytest.raises(AccountError, match="slot grok:implementer"):
