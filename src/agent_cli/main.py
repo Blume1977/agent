@@ -3325,16 +3325,32 @@ def _print_lane_result(result: LaneResult) -> None:
 
 
 def cmd_models(args: list[str]) -> None:
-    """Print the device's model slots: ``agent models [first|second] [--json]``."""
+    """Print model slots: the device's, or with ``--task`` the ones pinned on that task.
+
+    ``agent models [first|second] [--task UUID] [--json]``
+    """
+    usage = "Usage: agent models [first|second] [--task UUID] [--json]"
     as_json = "--json" in args
-    positional = [a for a in args if not a.startswith("--")]
-    if len(positional) > 1 or any(a.startswith("--") and a != "--json" for a in args):
-        die("Usage: agent models [first|second] [--json]")
-    models = load_model_slots(home())
+    tid = flag(args, "--task")
+    rest = [a for a in args if a != "--json"]
+    if tid is not None:
+        i = rest.index("--task")
+        rest = rest[:i] + rest[i + 2 :]
+    positional = [a for a in rest if not a.startswith("--")]
+    if len(positional) > 1 or any(a.startswith("--") for a in rest) or tid == "":
+        die(usage)
+    if tid is None:
+        models = load_model_slots(home())
+    else:
+        store = open_store()
+        try:
+            models = models_from_snapshot(_need(store, "task", tid))
+        finally:
+            store.close()
     if positional:
         slot = positional[0]
         if slot not in ("first", "second"):
-            die("Usage: agent models [first|second] [--json]")
+            die(usage)
         if as_json:
             print(json.dumps({slot: models.for_slot(slot)}, sort_keys=True))
         else:

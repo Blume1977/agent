@@ -9,7 +9,7 @@ from typing import Any
 
 from .coordinator_config import RepositoryConfig, WorkerConfig
 from .github_accounts import Account, AccountError, load_accounts
-from .model_slots import DEFAULT_MODEL_SLOTS, SLOT_KEY_PREFIXES, SLOT_STAGES, STAGE_SLOTS, ModelSlots
+from .model_slots import DEFAULT_MODEL_SLOTS, SLOT_KEY_PREFIXES, STAGE_SLOTS, ModelSlots
 from .runtime import Completed
 from .store import Store, StoreError, utcnow
 

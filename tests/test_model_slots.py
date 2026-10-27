@@ -570,3 +570,24 @@ def test_gates_follow_a_non_default_pin(tmp_path: Path, capsys: pytest.CaptureFi
         assert store.row("task", tid)["state"] == "pr-review"
     finally:
         store.close()
+
+
+
+def test_agent_models_task_prints_the_pin(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    tid = _task(tmp_path, capsys)  # pinned grok/codex
+    write_claude_first(tmp_path)
+    _run(tmp_path, ["models", "first"])
+    assert capsys.readouterr().out == "claude\n"
+    _run(tmp_path, ["models", "first", "--task", tid])
+    assert capsys.readouterr().out == "grok\n"
+    _run(tmp_path, ["models", "--task", tid, "--json"])
+    assert json.loads(capsys.readouterr().out) == {"first": "grok", "second": "codex"}
+    with pytest.raises(SystemExit, match="--task needs a value"):
+        _run(tmp_path, ["models", "--task"])
+
+
+@pytest.mark.no_pg
+def test_misnamed_models_key_stops_load_model_slots(tmp_path: Path) -> None:
+    (tmp_path / "ai-accounts.json").write_text(json.dumps({"model": {"first": "claude", "second": "codex"}}), encoding="utf-8")
+    with pytest.raises(AccountError, match="accepts only"):
+        load_model_slots(tmp_path)
