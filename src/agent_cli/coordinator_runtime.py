@@ -18,7 +18,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from .a38_review import COMPLIANCE_PROMPT
 from .ai_accounts import AccountError as AIAccountError
-from .ai_accounts import load_ai_accounts
+from .ai_accounts import AIAccounts, load_ai_accounts
 from .model_slots import DEFAULT_MODEL_SLOTS, ModelSlotsError, models_from_snapshot
 from .allow import CHECKLIST_KEYS
 from .coordinator_common import (
@@ -150,11 +150,16 @@ def preflight_worker(store: Store, worker: WorkerConfig, runner: Runner) -> None
         raise CoordinatorError("workspace_root must be absolute")
 
 
-def execution_binding(store: Store, worker: WorkerConfig, repo: str) -> str:
-    """Pin selected execution metadata, never credential contents or unrelated profiles."""
+def execution_binding(
+    store: Store, worker: WorkerConfig, repo: str, ai: AIAccounts | None = None
+) -> str:
+    """Pin selected execution metadata, never credential contents or unrelated profiles.
+
+    ``ai`` lets a caller hash the same manifest read it pins ``models`` from.
+    """
     cfg = repo_cfg(worker, repo)
     github = load_accounts(store.home)
-    ai = load_ai_accounts(store.home)
+    ai = ai if ai is not None else load_ai_accounts(store.home)
     selected = {
         "repository": asdict(cfg), "workspace": str(worker.workspace_root),
         "worker_session": worker.session_id, "review_session": worker.review_session,
@@ -172,9 +177,13 @@ def execution_binding(store: Store, worker: WorkerConfig, repo: str) -> str:
 def _first_slot_vendor(task: dict[str, Any]) -> str:
     """Provider of model slot ``first``, pinned on the task when it was created."""
     try:
-        return models_from_snapshot(task).first
+        first = models_from_snapshot(task).first
     except ModelSlotsError as exc:
         raise CoordinatorError(str(exc)) from exc
+    if first == "codex":
+        # Same refusal as preflight, for the pin itself.
+        raise CoordinatorError("models.first = codex is not supported by the coordinator")
+    return first
 
 
 def _terminal(task: dict[str, Any]) -> bool:
@@ -260,6 +269,13 @@ def _create_implement_task(
     """Insert task under device-wide source admission lock. None if another owner won."""
     session = owned_session(store, worker.session_id)
     tid = str(uuid.uuid4())
+    # One manifest read for both the binding hash and the models pin.
+    try:
+        ai = load_ai_accounts(store.home)
+    except AIAccountError as exc:
+        raise CoordinatorError(str(exc)) from exc
+    if ai.models.first == "codex":
+        raise CoordinatorError("models.first = codex is not supported by the coordinator")
     c = {
         "phase": "accept",
         "source": {
@@ -272,7 +288,7 @@ def _create_implement_task(
             "body": redact(body, limit=2000),
         },
         "branch": f"task-{tid[:8]}",
-        "execution_binding": execution_binding(store, worker, repo),
+        "execution_binding": execution_binding(store, worker, repo, ai),
         "worker_session": worker.session_id,
         "worker_login": account_for(store, worker.session_id).login.casefold(),
     }
@@ -299,7 +315,7 @@ def _create_implement_task(
             "payload": {"coordinator": c, "source_issue": {"repo": repo, "number": number}},
             "state": "open",
             "current_round": 0,
-            "models": load_ai_accounts(store.home).models.as_dict(),
+            "models": ai.models.as_dict(),
             "created_at": utcnow(),
             "updated_at": utcnow(),
             "change_summary_en": None,
