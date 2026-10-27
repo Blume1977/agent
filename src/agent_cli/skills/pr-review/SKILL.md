@@ -1,14 +1,14 @@
 ---
 name: pr-review
 description: >-
-  Public review contract: quality and logic gates on a head SHA, grok then
-  codex. Requires spine. Review lanes execute no software. A human merges.
+  Public review contract: quality and logic gates on a head SHA, model slot
+  first then model slot second (providers per ai-accounts.json). Requires spine. Review lanes execute no software. A human merges.
 ---
 
 # Pull-request review contract
 
 Requires **spine**. Roles: `pr-reviewer-quality`, `pr-reviewer-logic`.
-Vendors: `grok`, then `codex`.
+Order: model slot `first`, then model slot `second`. The provider of each slot (`grok`, `codex` or `claude`) is the device's `ai-accounts.json` (`models`); the examples below assume `first` = grok and `second` = codex.
 
 Without this skill, `agent gate` and pr-reviewer `agent agent` commands refuse.
 
@@ -27,8 +27,9 @@ Do not start a monitor, poll GitHub, or wait for CI or another review. Return
 findings or blockers to the script when the review work is exhausted. The
 script monitors events and informs a lane when further work is useful.
 
-Two dimensions (quality, logic) and two vendor stages (`grok-pr`, then
-`codex-pr`). Codex stages run only if both grok dimensions are `approved`.
+Two dimensions (quality, logic) and two slot stages (`grok-pr` = slot first,
+then `codex-pr` = slot second; historical names). The second stage runs only if
+both first-slot dimensions are `approved`.
 
 ```bash
 agent agent start --session <session-id> --task <uuid> --role pr-reviewer-quality --vendor grok
@@ -44,7 +45,7 @@ agent gate record --task <uuid> --stage grok-pr --dimension quality --vendor gro
 
 `gate record --verdict approved|rejected|unavailable` (`unavailable` needs `--evidence`).
 
-Then the same two dimensions with `--vendor codex` and `--stage codex-pr`.
+Then the same two dimensions with `--vendor <second-slot provider>` and `--stage codex-pr`.
 
 Review lanes execute no software (no tests, builds, or servers).
 

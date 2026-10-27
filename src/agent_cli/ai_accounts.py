@@ -8,14 +8,26 @@ configuration directory; this manifest stores only directory paths. Static launc
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .model_slots import (
+    DEFAULT_MODEL_SLOTS,
+    SUPPORTED_PROVIDERS,
+    ModelSlots,
+    ModelSlotsError,
+    parse_model_slots,
+)
 from .store import StoreError
 
 CONFIG_FILE = "ai-accounts.json"
-SUPPORTED_PROVIDERS = frozenset({"grok", "codex"})
+# Provider CLI configuration-directory variable per supported provider.
+PROVIDER_HOME_ENV = {
+    "grok": "GROK_HOME",
+    "codex": "CODEX_HOME",
+    "claude": "CLAUDE_CONFIG_DIR",
+}
 ACCESS_VALUES = frozenset({"read-only", "workspace-write"})
 # Fixed workflow kinds that must resolve to read-only access. These are protocol
 # capabilities, not installed user-role names.
@@ -32,6 +44,7 @@ _CLEAR_ENV = (
     "CLAUDE_CODE_ENTRYPOINT",
     "GROK_HOME",
     "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
 )
 
 
@@ -79,20 +92,19 @@ class AIRole:
         """Return an ``env`` argv prefix that isolates provider configuration.
 
         Clears ambient provider tokens and home variables for the child process
-        only, then sets ``GROK_HOME`` or ``CODEX_HOME`` to this role's account
-        ``config_dir``. Does not mutate ``os.environ``. This is process
+        only, then sets the provider's configuration-directory variable
+        (``GROK_HOME``, ``CODEX_HOME`` or ``CLAUDE_CONFIG_DIR``) to this role's
+        account ``config_dir``. Does not mutate ``os.environ``. This is process
         configuration isolation, not a sandbox or a claim that the provider CLI
         is already authenticated.
         """
         argv = ["env"]
         for key in _CLEAR_ENV:
             argv.extend(["-u", key])
-        if self.account.provider == "grok":
-            argv.append(f"GROK_HOME={self.account.config_dir}")
-        elif self.account.provider == "codex":
-            argv.append(f"CODEX_HOME={self.account.config_dir}")
-        else:
+        home_var = PROVIDER_HOME_ENV.get(self.account.provider)
+        if home_var is None:
             raise AccountError(f"Unsupported provider for role {self.name}")
+        argv.append(f"{home_var}={self.account.config_dir}")
         return argv
 
 
@@ -108,14 +120,20 @@ class AIAccounts:
     roles: dict[str, AIRole]
     sessions: dict[str, AISessionBinding]
     usage_session: str | None = None
+    # Which provider fills model slot ``first`` and ``second`` on this device.
+    models: ModelSlots = DEFAULT_MODEL_SLOTS
+    # Device-wide lane bindings (slot → role) used when a session binds none.
+    lanes: dict[str, str] = field(default_factory=dict)
 
     def for_lane(self, session_id: str, role: str, vendor: str) -> AIRole:
-        binding = self.sessions.get(session_id)
-        if binding is None:
-            raise AccountError(f"No AI session configured for {session_id}")
         slot = f"{vendor}:{role}"
-        role_name = binding.lanes.get(slot)
+        binding = self.sessions.get(session_id)
+        role_name = binding.lanes.get(slot) if binding is not None else None
         if role_name is None:
+            role_name = self.lanes.get(slot)
+        if role_name is None:
+            if binding is None and not self.lanes:
+                raise AccountError(f"No AI session configured for {session_id}")
             raise AccountError(f"No AI lane configured for session {session_id} slot {slot}")
         selected = self.roles[role_name]
         if selected.account.provider != vendor:
@@ -145,8 +163,15 @@ def load_ai_accounts(home: Path) -> AIAccounts:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
         raise AccountError(f"Cannot read {CONFIG_FILE}") from exc
-    if not isinstance(raw, dict) or set(raw) - {"accounts", "roles", "sessions", "usage_session"}:
-        raise AccountError(f"{CONFIG_FILE} accepts only accounts, roles, sessions, and usage_session")
+    allowed_keys = {"accounts", "roles", "sessions", "usage_session", "models", "lanes"}
+    if not isinstance(raw, dict) or set(raw) - allowed_keys:
+        raise AccountError(
+            f"{CONFIG_FILE} accepts only accounts, roles, sessions, usage_session, models, and lanes"
+        )
+    try:
+        models = parse_model_slots(raw.get("models"))
+    except ModelSlotsError as exc:
+        raise AccountError(str(exc)) from exc
     accounts_raw = raw.get("accounts")
     roles_raw = raw.get("roles")
     sessions_raw = raw.get("sessions")
@@ -188,6 +213,19 @@ def load_ai_accounts(home: Path) -> AIAccounts:
             raise AccountError(f"Invalid access for role {name}")
         roles[name] = AIRole(name, accounts[account_name], model, access)
 
+    device_lanes_raw = raw.get("lanes")
+    if device_lanes_raw is None:
+        device_lanes_raw = {}
+    if not isinstance(device_lanes_raw, dict):
+        raise AccountError("lanes must be an object or null")
+    device_lanes: dict[str, str] = {}
+    for slot, role_name in device_lanes_raw.items():
+        _text(slot, "lane slot")
+        bound = _text(role_name, "lane role")
+        if bound not in roles:
+            raise AccountError(f"Device lane {slot} references an unknown role")
+        device_lanes[slot] = bound
+
     sessions: dict[str, AISessionBinding] = {}
     for session_id, entry in sessions_raw.items():
         _text(session_id, "session id")
@@ -226,4 +264,9 @@ def load_ai_accounts(home: Path) -> AIAccounts:
         selected = roles[sessions[usage_session].interactive]
         if selected.account.provider != "grok":
             raise AccountError("usage_session currently supports the Grok billing adapter only")
-    return AIAccounts(accounts, roles, sessions, usage_session)
+    return AIAccounts(accounts, roles, sessions, usage_session, models, device_lanes)
+
+
+def load_model_slots(home: Path) -> ModelSlots:
+    """The device's model slot configuration (historical order when unset)."""
+    return load_ai_accounts(home).models
