@@ -411,3 +411,22 @@ def test_cli_next_prints_configured_vendor(
     out = capsys.readouterr().out
     assert "vendor=claude|codex" in out
     assert "who=claude|codex implementer" in out
+
+
+@pytest.mark.no_pg
+def test_cli_models_prints_configured_slots(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _run(tmp_path, ["models"])
+    assert capsys.readouterr().out == "first=grok\nsecond=codex\n"
+    write_claude_first(tmp_path)
+    _run(tmp_path, ["models"])
+    assert capsys.readouterr().out == "first=claude\nsecond=codex\n"
+    _run(tmp_path, ["models", "first"])
+    assert capsys.readouterr().out == "claude\n"
+    _run(tmp_path, ["models", "--json"])
+    assert json.loads(capsys.readouterr().out) == {"first": "claude", "second": "codex"}
+    _run(tmp_path, ["models", "second", "--json"])
+    assert json.loads(capsys.readouterr().out) == {"second": "codex"}
+    with pytest.raises(SystemExit, match="Usage: agent models"):
+        _run(tmp_path, ["models", "third"])
+    with pytest.raises(SystemExit, match="Usage: agent models"):
+        _run(tmp_path, ["models", "--yaml"])

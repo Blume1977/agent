@@ -3322,6 +3322,29 @@ def _print_lane_result(result: LaneResult) -> None:
     )
 
 
+def cmd_models(args: list[str]) -> None:
+    """Print the device's model slots: ``agent models [first|second] [--json]``."""
+    as_json = "--json" in args
+    positional = [a for a in args if not a.startswith("--")]
+    if len(positional) > 1 or any(a.startswith("--") and a != "--json" for a in args):
+        die("Usage: agent models [first|second] [--json]")
+    models = load_model_slots(home())
+    if positional:
+        slot = positional[0]
+        if slot not in ("first", "second"):
+            die("Usage: agent models [first|second] [--json]")
+        if as_json:
+            print(json.dumps({slot: models.for_slot(slot)}, sort_keys=True))
+        else:
+            print(models.for_slot(slot))
+        return
+    if as_json:
+        print(json.dumps(models.as_dict(), sort_keys=True))
+        return
+    for slot, vendor in models.as_dict().items():
+        print(f"{slot}={vendor}")
+
+
 def cmd_lane(args: list[str]) -> None:
     if not args or args[0] != "run":
         die(
@@ -3830,6 +3853,7 @@ COMMANDS = {
     "pg": cmd_pg,
     "knock": cmd_knock,
     "lane": cmd_lane,
+    "models": cmd_models,
     "watch": cmd_watch,
     "supervise": cmd_supervise,
     "coordinate": cmd_coordinate,
@@ -3845,7 +3869,7 @@ def main(argv: list[str] | None = None) -> None:
     if not args or args[0] in ("-h", "--help"):
         die(
             "Usage: agent <init|session|skills|activity|task|checklist|round|agent|check|local-ci|a38|pr-guard|gate|work|"
-            "allow|next|close-step|run|pair|sync|restore|ping|status|dashboard|cli-bridge|daemon|pg|knock|lane|watch|"
+            "allow|next|close-step|run|pair|sync|restore|ping|status|dashboard|cli-bridge|daemon|pg|knock|lane|models|watch|"
             "github|query|subscribe|mail|supervise|coordinate> …"
         )
     cmd = args[0]
