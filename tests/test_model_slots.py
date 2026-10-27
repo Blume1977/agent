@@ -512,3 +512,13 @@ def test_load_model_slots_ignores_unrelated_manifest_errors(tmp_path: Path) -> N
     with pytest.raises(AccountError):
         load_ai_accounts(tmp_path)
     assert load_model_slots(tmp_path) == ModelSlots("claude", "codex")
+
+
+@pytest.mark.no_pg
+def test_lane_run_rejects_a_missing_cwd(tmp_path: Path) -> None:
+    write_claude_first(tmp_path)
+    spec = tmp_path / "spec.md"
+    spec.write_text("x\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="--cwd is not a directory"):
+        _run(tmp_path, ["lane", "run", "--role", "implementer", "--vendor", "claude", "--session", "s",
+                        "--spec-file", str(spec), "--cwd", str(tmp_path / "missing"), "--no-tmux"])

@@ -3358,7 +3358,7 @@ def cmd_lane(args: list[str]) -> None:
     vendor = require_flag(rest, "--vendor")
     session_id = require_flag(rest, "--session")
     spec_file = require_flag(rest, "--spec-file")
-    cwd = flag(rest, "--cwd") or os.getcwd()
+    cwd = _resolve_run_cwd(rest)
     dry_run = "--dry-run" in rest
     tmux = "--no-tmux" not in rest
     if role not in LANE_ROLES:

@@ -3,7 +3,9 @@
 Static scripts that load this manifest select AI provider accounts and
 user-defined roles from `$AGENT_HOME/ai-accounts.json`. Installation creates no
 accounts, roles, or session selections. A missing file, `{}`, or null/empty
-`accounts`, `roles`, and `sessions` leaves the configuration empty. There is no
+`accounts`, `roles`, `sessions` and `lanes` leaves the configuration empty; an
+absent `models` block only selects the historical order `grok`, then `codex`
+for reading old ledger rows and authorizes no launch. There is no
 implicit provider profile, model, or role from the host environment, hub
 pairing, or built-in defaults.
 
@@ -86,9 +88,12 @@ names and now mean the slot, not a provider: gate stages `grok-pr` (slot
 without a `models` block keeps the historical order `grok`, then `codex`.
 
 A task pins the device's `models` when it is created (`task create`, the issue
-coordinator, error-fix tasks). Every later check for that task (`agent start`,
+coordinator, error-fix tasks). Every later check for that task (`agent agent start` for `reviewer` and
+`implementer`,
 `gate record`, `allow`, `next`, `run`, the coordinator gates) uses the pinned
-value, so changing `models` affects new tasks only. Tasks without a pin keep
+value, so changing `models` affects new tasks only. For the PR reviewer roles,
+`agent agent start` accepts any supported provider and `gate record` enforces the
+pinned slot provider. Tasks without a pin keep
 `grok`, then `codex`.
 
 The issue coordinator refuses `models.first = codex`: its implementer must not
@@ -153,7 +158,7 @@ from the loader does not echo credential contents.
 
 `AIRole.env_prefix()` returns an `env` argv prefix for child processes. It
 removes ambient `XAI_API_KEY`, `GROK_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`,
-`ANTHROPIC_API_KEY`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `GROK_HOME`,
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `GROK_HOME`,
 `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`, then sets `GROK_HOME`, `CODEX_HOME` or
 `CLAUDE_CONFIG_DIR` to the role's account `config_dir`. It does not mutate the parent `os.environ`. Unrelated environment
 variables are left for the child to inherit. This is process configuration
@@ -188,7 +193,8 @@ vendor/role lists and built-in model choices in code. After adopting
 4. Sessions without a binding of their own use the device-wide `lanes` map.
    An empty or missing file does not authorize a fallback identity.
 
-Configure sessions explicitly before enabling launch paths after upgrading.
+Configure the lane bindings (device-wide `lanes` or per session) before
+enabling launch paths after upgrading.
 For example, the static script invokes `agent lane run --session chosen-session
 --role implementer --vendor claude --spec-file task.md --no-tmux`; it resolves the
 `claude:implementer` slot to the operator-defined role. `agent run` resolves slots

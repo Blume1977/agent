@@ -24,7 +24,13 @@ OUTPUT_FILE_VENDORS = frozenset({"codex"})
 NPROC_CAP = 800
 # Stripped from every lane: a lane runs on its own provider login, never on the
 # orchestrator's ambient API key or Claude Code session markers.
-GROK_STRIP_ENV = ("ANTHROPIC_API_KEY", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+GROK_STRIP_ENV = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+)
 _CLAUDE_READ_TOOLS = ("Read", "Grep", "Glob")
 _CLAUDE_WRITE_TOOLS = ("Edit", "Write", "NotebookEdit")
 # Never for a lane: executing software, spawning subagents, reaching the web.
