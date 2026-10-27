@@ -95,7 +95,10 @@ A task pins the device's `models` when it is created (`task create`, the issue
 coordinator, error-fix tasks). Every later check for that task (`agent agent start` for `reviewer` and
 `implementer`,
 `gate record`, `allow`, `next`, `run`, the coordinator gates) uses the pinned
-value, so changing `models` affects new tasks only. For the PR reviewer roles,
+value, so changing `models` affects new CLI and error-fix tasks only. The issue
+coordinator also hashes the device's non-default `models` into each accepted
+task's execution binding: after a change, tasks it already accepted stop with
+"task execution configuration changed" until the configuration is restored. For the PR reviewer roles,
 `agent agent start` accepts any supported provider and `gate record` enforces the
 pinned slot provider. Tasks without a pin keep
 `grok`, then `codex`.
