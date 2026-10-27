@@ -157,6 +157,9 @@ def claude_argv(*, cwd: str, write: bool, model: str) -> list[str]:
         argv.extend(["--allowedTools", *_CLAUDE_READ_TOOLS, *_CLAUDE_WRITE_TOOLS])
         argv.extend(["--disallowedTools", *_CLAUDE_FORBIDDEN_TOOLS])
     else:
+        # Explicit mode: a user-level permissions.defaultMode (e.g. bypassPermissions)
+        # must not reach a read-only lane.
+        argv.extend(["--permission-mode", "default"])
         argv.extend(["--allowedTools", *_CLAUDE_READ_TOOLS])
         argv.extend(["--disallowedTools", *_CLAUDE_WRITE_TOOLS, *_CLAUDE_FORBIDDEN_TOOLS])
     return argv
@@ -362,6 +365,16 @@ def launch(
         )
 
     stdin_text: str | None = spec_text if vendor in SPEC_VIA_STDIN else None
+    if tmux and vendor == "claude" and tmux_session is not None:
+        # claude --print reads the prompt from stdin only when stdin is not a
+        # TTY; in a tmux pane it is. Redirect the spec file instead of typing it.
+        inner = argv[argv.index("--") + 1 :]
+        argv = tmux_wrap_argv(
+            ["sh", "-c", 'f=$1; shift; exec "$@" < "$f"', "sh", spec_file, *inner],
+            name=tmux_session,
+            cwd=cwd,
+        )
+        stdin_text = None
     try:
         if runner is not None:
             completed = runner(argv, None if tmux else stdin_text)

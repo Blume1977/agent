@@ -52,7 +52,7 @@ from .knock import drain as knock_drain
 from .knock import listen_once as knock_listen
 from .lane import LANE_ROLES, LANE_VENDORS, LaneResult, launch
 from .local_ci import LocalCiError, parse_comment, parse_payload, render_block, verify_comment
-from .model_slots import PROVIDER_CHOICES, STAGE_CHOICES, ModelSlots, models_from_snapshot
+from .model_slots import PROVIDER_CHOICES, STAGE_CHOICES, ModelSlots, ModelSlotsError, models_from_snapshot
 from .pg import PgError, cluster_exists, cluster_running, ensure_cluster, require_loopback_dsn, stop_cluster
 from .pr_guard_config import PrGuardLookupError, fetch_trusted_pr_guard, one_review_for
 from .runtime import (
@@ -3881,6 +3881,8 @@ def main(argv: list[str] | None = None) -> None:
         COMMANDS[cmd](args[1:])
     except (StoreError, HubError) as exc:
         die(str(exc))
+    except ModelSlotsError as exc:
+        die(f"invalid models pinned on the task: {exc}")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from uuid import NAMESPACE_URL, uuid5
 from .a38_review import COMPLIANCE_PROMPT
 from .ai_accounts import AccountError as AIAccountError
 from .ai_accounts import load_ai_accounts
-from .model_slots import ModelSlotsError, models_from_snapshot
+from .model_slots import DEFAULT_MODEL_SLOTS, ModelSlotsError, models_from_snapshot
 from .allow import CHECKLIST_KEYS
 from .coordinator_common import (
     REQUIRED_LANE_SLOTS,
@@ -160,9 +160,9 @@ def execution_binding(store: Store, worker: WorkerConfig, repo: str) -> str:
         "worker_session": worker.session_id, "review_session": worker.review_session,
         "reply_logins": worker.reply_logins,
         "github": [asdict(github.for_session(sid)) for sid in (worker.session_id, worker.review_session)],
-        # Only an explicit models block enters the hash, so a device without one
-        # keeps the binding hash of tasks accepted before model slots existed.
-        **({"models": ai.models.as_dict()} if ai.models_configured else {}),
+        # Only a non-default models block enters the hash, so a device without one,
+        # or with the default written out, keeps the hash of earlier tasks.
+        **({"models": ai.models.as_dict()} if ai.models != DEFAULT_MODEL_SLOTS else {}),
         "lanes": [asdict(ai.for_lane(worker.session_id, slot.split(":", 1)[1], slot.split(":", 1)[0]))
                   for slot in required_lane_slots(ai.models)],
     }

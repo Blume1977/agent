@@ -3,14 +3,18 @@
 Static scripts that load this manifest select AI provider accounts and
 user-defined roles from `$AGENT_HOME/ai-accounts.json`. Installation creates no
 accounts, roles, or session selections. A missing file, `{}`, or null/empty
-`accounts`, `roles`, `sessions` and `lanes` leaves the configuration empty; an
-absent `models` block only selects the historical order `grok`, then `codex`
-for reading old ledger rows and authorizes no launch. There is no
+`accounts`, `roles`, `sessions` and `lanes` leaves the configuration empty. An
+absent `models` block pins the historical order `grok`, then `codex` on new tasks
+and is how tasks without a pin are read; it authorizes no launch without lane
+bindings. There is no
 implicit provider profile, model, or role from the host environment, hub
 pairing, or built-in defaults.
 
 This device-local manifest is used by `agent lane run`, the lane steps of
-`agent run`, interactive Grok session starts, and optional Grok usage polling.
+`agent run`, interactive Grok session starts, optional Grok usage polling,
+and, for its `models` block only, by every task creation (`agent task create`,
+the issue coordinator, error-fix tasks) and `agent models`; a malformed `models`
+block therefore stops task creation.
 It does not implement the complete issue-to-PR coordinator or a sandbox.
 
 The following is an **operator-supplied example**, never an installed default.

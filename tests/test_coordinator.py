@@ -3051,6 +3051,12 @@ def test_execution_binding_unchanged_without_models_block(tmp_path: Path) -> Non
     data = json.loads(path.read_text())
     data["models"] = {"first": "grok", "second": "codex"}
     path.write_text(json.dumps(data))
+    assert execution_binding(store, worker, repo) == before  # default written out
+    data["models"] = {"first": "grok", "second": "claude"}
+    data["accounts"]["claude-w"] = {"provider": "claude", "config_dir": "/test/claude"}
+    data["roles"]["claude-reader"] = {"account": "claude-w", "model": "m", "access": "read-only"}
+    data["lanes"] = {"claude:pr-reviewer-quality": "claude-reader", "claude:pr-reviewer-logic": "claude-reader"}
+    path.write_text(json.dumps(data))
     assert execution_binding(store, worker, repo) != before
     data.pop("models")
     path.write_text(json.dumps(data))
