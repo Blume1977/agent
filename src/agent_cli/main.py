@@ -925,13 +925,14 @@ def cmd_agent(args: list[str]) -> None:
                 die(f"role must be {'|'.join(AGENT_ROLES)}")
             if vendor not in VENDORS:
                 die(f"vendor must be {PROVIDER_CHOICES}")
-            pinned = store.row("task", tid)
-            models = models_from_snapshot(pinned) if pinned is not None else _store_models(store)
             round_raw = flag(rest, "--round")
             round_num: int | None = None
             if role in ("implementer", "reviewer"):
                 if round_raw is None or round_raw == "":
                     die(f"{role} requires --round")
+            # The task's pin; an unknown task is reported below by _need, and
+            # until then the historical order applies (never the device setting).
+            models = models_from_snapshot(store.row("task", tid))
             if role == "reviewer" and vendor != models.first:
                 die(f"reviewer requires --vendor {models.first} (configured model slot first)")
             if role == "implementer" and models.slot_of(vendor) is None:

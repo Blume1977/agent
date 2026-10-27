@@ -3196,3 +3196,12 @@ def test_readiness_uses_the_providers_pinned_on_the_task(
     with pytest.raises(CoordinatorError, match="missing approved gate grok-pr/"):
         phase_readiness(store, worker, task, fake)
 
+
+
+
+def test_first_slot_vendor_refuses_a_codex_pin() -> None:
+    from agent_cli.coordinator_runtime import _first_slot_vendor
+
+    with pytest.raises(CoordinatorError, match="models.first = codex"):
+        _first_slot_vendor({"models": {"first": "codex", "second": "grok"}})
+    assert _first_slot_vendor({}) == "grok"
