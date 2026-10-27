@@ -862,17 +862,22 @@ def phase_pr_gates(
     latest = latest_gates(store, task["id"])
     second_stage = stage == SLOT_STAGES["second"]
     next_phase = "ci" if second_stage else "pr_gates_codex"
+    first_vendor = _task_models(task).first
+
+    def _approved(gate: dict[str, Any] | None, want_vendor: str) -> bool:
+        # A gate counts only from the provider pinned on the task for that slot.
+        return (
+            gate is not None
+            and gate.get("verdict") == "approved"
+            and gate.get("head_sha") == head
+            and gate.get("vendor") == want_vendor
+        )
+
     if second_stage:
         for dim in ("quality", "logic"):
-            g = latest.get(("grok-pr", dim))
-            if g is None or g.get("verdict") != "approved" or g.get("head_sha") != head:
+            if not _approved(latest.get(("grok-pr", dim)), first_vendor):
                 raise CoordinatorError(f"codex-pr requires approved grok-pr/{dim} on {head[:7]}")
-    if all(
-        (g := latest.get((stage, dim))) is not None
-        and g.get("verdict") == "approved"
-        and g.get("head_sha") == head
-        for dim in ("quality", "logic")
-    ):
+    if all(_approved(latest.get((stage, dim)), vendor) for dim in ("quality", "logic")):
         if second_stage:
             for dim in ("quality", "logic"):
                 _promote_posted_codex_checklist(
@@ -886,11 +891,7 @@ def phase_pr_gates(
     lines: list[str] = []
     for dimension, role in (("quality", "pr-reviewer-quality"), ("logic", "pr-reviewer-logic")):
         existing = latest.get((stage, dimension))
-        if (
-            existing is not None
-            and existing.get("verdict") == "approved"
-            and existing.get("head_sha") == head
-        ):
+        if _approved(existing, vendor):
             if second_stage:
                 _promote_posted_codex_checklist(
                     store, task, stage=stage, head=head, dimension=dimension

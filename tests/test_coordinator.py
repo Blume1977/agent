@@ -3205,3 +3205,37 @@ def test_first_slot_vendor_refuses_a_codex_pin() -> None:
     with pytest.raises(CoordinatorError, match="models.first = codex"):
         _first_slot_vendor({"models": {"first": "codex", "second": "grok"}})
     assert _first_slot_vendor({}) == "grok"
+
+
+
+def test_pr_gates_ignore_gates_from_another_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wrong-provider gate neither unlocks slot second nor counts as cached."""
+    from agent_cli import coordinator_lanes
+
+    store, worker, fake = _ready_side_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(coordinator_lanes, "verify_checkout_identity", lambda *a, **k: None)
+    monkeypatch.setattr(coordinator_lanes, "verify_signed_clean_head", lambda *a, **k: fake.head)
+    pinned = {"first": "claude", "second": "codex"}
+    task = _seed_ready_side_task(
+        store, worker, fake, tid="aa000001-0000-4000-8000-0000000000d1", phase="pr_gates_codex",
+        checklist_codex={}, models=pinned, first_vendor="grok",
+    )
+    with pytest.raises(CoordinatorError, match="codex-pr requires approved grok-pr/"):
+        coordinator_lanes.phase_pr_gates(store, worker, task, fake, None, vendor="codex", stage="codex-pr")
+
+    task = _seed_ready_side_task(
+        store, worker, fake, tid="aa000001-0000-4000-8000-0000000000d2", phase="pr_gates_grok",
+        checklist_codex={}, models=pinned, first_vendor="grok",
+    )
+    launched: list[str] = []
+    diff = tmp_path / "review.diff"
+    diff.write_text("diff\n", encoding="utf-8")
+    monkeypatch.setattr(coordinator_lanes, "write_review_diff", lambda *a, **k: diff)
+    monkeypatch.setattr(coordinator_lanes, "write_review_context", lambda *a, **k: "")
+    monkeypatch.setattr(
+        coordinator_lanes, "_prepare_pr_review_agent",
+        lambda *a, **k: launched.append(k["role"]) or (_ for _ in ()).throw(CoordinatorError("stop")),
+    )
+    with pytest.raises(CoordinatorError, match="stop"):
+        coordinator_lanes.phase_pr_gates(store, worker, task, fake, None, vendor="claude", stage="grok-pr")
+    assert launched  # grok gates on a claude-pinned task are not taken as cached
