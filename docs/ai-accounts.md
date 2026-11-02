@@ -173,7 +173,8 @@ from the loader does not echo credential contents.
 removes ambient `XAI_API_KEY`, `GROK_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`,
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
 `ANTHROPIC_CUSTOM_HEADERS`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`,
-`AWS_BEARER_TOKEN_BEDROCK`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `GROK_HOME`,
+`AWS_BEARER_TOKEN_BEDROCK`, `CLAUDE_CODE_USE_FOUNDRY`, `ANTHROPIC_FOUNDRY_API_KEY`,
+`ANTHROPIC_FOUNDRY_BASE_URL`, `ANTHROPIC_FOUNDRY_RESOURCE`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `GROK_HOME`,
 `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`, then sets `GROK_HOME`, `CODEX_HOME` or
 `CLAUDE_CONFIG_DIR` to the role's account `config_dir`. It does not mutate the parent `os.environ`. Unrelated environment
 variables are left for the child to inherit. This is process configuration
@@ -186,8 +187,9 @@ authenticated for that profile.
 and fails when that binding is absent or null. The loader may represent Codex
 and Claude roles in the manifest. Interactive runtime support remains Grok-only;
 unsupported interactive providers are refused. The `claude` adapter is a
-headless lane (`claude --print`, spec on stdin, read-only or edit-only tool
-sets, never Bash, subagents or the web). The configured model is required,
+headless lane (`claude --print`, spec on stdin, read tools only, plus
+`acceptEdits` (edits inside the worktree only) for a write lane; never Bash,
+subagents or the web). The configured model is required,
 and a supplied `--model` must agree with it. A resumed conversation is pinned to
 the configured role, account, model, access and configuration-directory identity;
 a changed or missing binding requires a new session. Existing unbound Grok

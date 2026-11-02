@@ -24,7 +24,7 @@ OUTPUT_FILE_VENDORS = frozenset({"codex"})
 NPROC_CAP = 800
 # Stripped from every lane and every lane pane: a lane runs on its own provider
 # login, never on the orchestrator's ambient Claude credentials, its API route
-# (gateway, Bedrock, Vertex) or Claude Code session markers.
+# (gateway, Bedrock, Vertex, Foundry) or Claude Code session markers.
 LANE_STRIP_ENV = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -34,6 +34,10 @@ LANE_STRIP_ENV = (
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
 )
