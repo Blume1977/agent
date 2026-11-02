@@ -4051,7 +4051,6 @@ def test_first_slot_implementer_closes_conflicts_resolved(
     assert "checklist conflicts_resolved=ja" in capsys.readouterr().out
 
 
-
 def _codex_implementer_done(tmp_path: Path, capsys: pytest.CaptureFixture[str], *, unpin: bool) -> str:
     """Task whose only finished implementer row is codex, as develop could record it."""
     tid = _spine_session_task(tmp_path, capsys)
@@ -4102,6 +4101,7 @@ def test_task_without_models_pin_closes_implementer_done_with_a_codex_row(
         ["close-step", "--task", tid, "--key", "implementer_done", "--source", "script", "--evidence", "codex row"],
     )
     assert "checklist implementer_done=ja" in capsys.readouterr().out
+
 
 def test_implementer_done_n_a_still_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]

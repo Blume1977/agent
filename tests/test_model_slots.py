@@ -465,6 +465,9 @@ def test_coordinator_snapshots_carry_the_configured_models(tmp_path: Path, capsy
             store.write("agent", "insert", aid, {"id": aid, "task_id": tid, "role": "implementer", "vendor": "claude", "status": status, "started_at": started})
         snap = checklist_snapshot(store, dict(task))
         assert [a["status"] for a in snap["agents"] if a["role"] == "implementer"] == ["working", "done"]
+        # A task created before model slots carries no pin.
+        unpinned = {k: v for k, v in dict(task).items() if k != "models"}
+        assert checklist_snapshot(store, unpinned)["models_pinned"] is False
         task_snap = _task_snapshot(store, tid)
         assert task_snap["models"] == {"first": "claude", "second": "codex"}
     finally:
