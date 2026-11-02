@@ -414,7 +414,14 @@ def _artifact_ok(step: Step, snapshot: dict[str, Any]) -> str:
             return "session is not active"
         return ""
     if step.role == "implementer":
-        ag = _latest_agent(snapshot, "implementer", step.slot)
+        # Closing accepts a row of either slot's provider: a task started before
+        # the implementer was bound to slot first may hold a second-slot row.
+        # Starting one (`agent agent start`) requires slot first.
+        models = models_from_snapshot(snapshot)
+        ag = None
+        for a in snapshot.get("agents") or []:
+            if a.get("role") == "implementer" and models.slot_of(str(a.get("vendor") or "")):
+                ag = a
         if not ag or ag.get("status") != "done":
             return "no finished implementer agent"
         verd = str(snapshot.get("implementer_verdict") or "")
@@ -472,13 +479,10 @@ def step_vendor(step: Step, models: ModelSlots | None) -> str | None:
 
 
 def step_vendor_label(step: Step, models: ModelSlots | None) -> str:
-    """Provider name for a pinned agent step, ``first|second`` providers for an unpinned one."""
-    chosen = models or DEFAULT_MODEL_SLOTS
-    if step.kind != "agent":
+    """Provider name for a pinned agent step, ``-`` otherwise."""
+    if step.kind != "agent" or step.slot is None:
         return "-"
-    if step.slot is None:
-        return f"{chosen.first}|{chosen.second}"
-    return chosen.for_slot(step.slot)
+    return (models or DEFAULT_MODEL_SLOTS).for_slot(step.slot)
 
 
 def handoff_prompt(

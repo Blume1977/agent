@@ -657,6 +657,28 @@ class TestCloseAllowed(unittest.TestCase):
 
 
 
+class TestImplementerRowFromBeforeTheSlotBinding(unittest.TestCase):
+    def test_a_second_slot_implementer_row_still_closes_the_step(self) -> None:
+        impl = next(s for s in steps_for("implement") if s.key == "implementer_done")
+        snapshot = {
+            "agents": [{"role": "implementer", "vendor": "codex", "status": "done"}],
+            "implementer_verdict": "done",
+        }
+        self.assertEqual(_artifact_ok(impl, snapshot), "")
+        conflicts = next(
+            s for s in steps_for("resolve-conflicts") if s.key == "conflicts_resolved"
+        )
+        self.assertEqual(_artifact_ok(conflicts, snapshot), "")
+
+    def test_a_row_outside_the_pinned_slots_does_not_close_the_step(self) -> None:
+        impl = next(s for s in steps_for("implement") if s.key == "implementer_done")
+        snapshot = {
+            "agents": [{"role": "implementer", "vendor": "claude", "status": "done"}],
+            "implementer_verdict": "done",
+        }
+        self.assertEqual(_artifact_ok(impl, snapshot), "no finished implementer agent")
+
+
 class TestPrReviewerWithoutSlot(unittest.TestCase):
     def test_pr_reviewer_step_without_slot_reports_instead_of_raising(self) -> None:
         step = Step(key="future_pr_logic", needs=(), kind="agent", role="pr-reviewer-logic")
