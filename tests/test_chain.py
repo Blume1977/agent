@@ -302,18 +302,18 @@ class TestCloseAllowed(unittest.TestCase):
         self.assertIn("close-step", text)
         self.assertNotIn("grok_pr_quality", text)
 
-    def test_handoff_unpinned_implementer_names_either_vendor(self) -> None:
+    def test_handoff_implementer_names_the_first_slot(self) -> None:
         impl = next(s for s in steps_for("implement") if s.key == "implementer_done")
-        self.assertIsNone(impl.slot)
+        self.assertEqual(impl.slot, "first")
         text = handoff_prompt(impl, task_id="31", session_id="sess")
-        self.assertIn("grok|codex", text)
-        self.assertIn("who=grok|codex implementer", text)
+        self.assertIn("who=grok implementer", text)
+        self.assertNotIn("grok|codex", text)
         conflicts = next(
             s for s in steps_for("resolve-conflicts") if s.key == "conflicts_resolved"
         )
-        self.assertIsNone(conflicts.slot)
+        self.assertEqual(conflicts.slot, "first")
         conflicts_text = handoff_prompt(conflicts, task_id="31", session_id="sess")
-        self.assertIn("who=grok|codex implementer", conflicts_text)
+        self.assertIn("who=grok implementer", conflicts_text)
         reviewer = next(s for s in steps_for("implement") if s.key == "reviewer_approved")
         self.assertEqual(reviewer.slot, "first")
         reviewer_text = handoff_prompt(reviewer, task_id="31", session_id="sess")

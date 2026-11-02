@@ -82,6 +82,7 @@ CHAINS: dict[str, tuple[Step, ...]] = {
             ("spec_written",),
             "agent",
             role="implementer",
+            slot="first",
         ),
         _step(
             "reviewer_approved",
@@ -172,6 +173,7 @@ CHAINS: dict[str, tuple[Step, ...]] = {
             ("session_registered",),
             "agent",
             role="implementer",
+            slot="first",
         ),
         _step(
             "reviewer_approved",

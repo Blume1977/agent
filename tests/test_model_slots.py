@@ -282,13 +282,13 @@ def test_launch_rejects_unknown_vendor(tmp_path: Path) -> None:
 @pytest.mark.no_pg
 def test_chain_steps_name_slots_not_vendors() -> None:
     steps = {s.key: s for s in steps_for("implement")}
-    assert steps["implementer_done"].slot is None
+    assert steps["implementer_done"].slot == "first"
     assert steps["reviewer_approved"].slot == "first"
     assert steps["grok_pr_quality"].slot == "first"
     assert steps["codex_pr_logic"].slot == "second"
     models = ModelSlots("claude", "codex")
     assert step_vendor_label(steps["reviewer_approved"], models) == "claude"
-    assert step_vendor_label(steps["implementer_done"], models) == "claude|codex"
+    assert step_vendor_label(steps["implementer_done"], models) == "claude"
     assert step_vendor_label(steps["codex_pr_quality"], models) == "codex"
     assert step_vendor_label(steps["session_registered"], models) == "-"
     assert "who=claude reviewer" in handoff_prompt(
@@ -374,8 +374,11 @@ def test_cli_agent_start_follows_configured_first_slot(
     _run(tmp_path, ["task", "state", tid, "implementing"])
     _run(tmp_path, ["round", "start", "--task", tid])
     capsys.readouterr()
-    with pytest.raises(SystemExit, match="implementer requires --vendor claude\\|codex"):
+    with pytest.raises(SystemExit, match="implementer requires --vendor claude \\(configured model slot first\\)"):
         _run(tmp_path, ["agent", "start", "--session", "s", "--task", tid, "--role", "implementer", "--vendor", "grok", "--round", "1"])
+    # The second slot's provider is refused too: the coordinator binds an implementer only for slot first.
+    with pytest.raises(SystemExit, match="implementer requires --vendor claude \\(configured model slot first\\)"):
+        _run(tmp_path, ["agent", "start", "--session", "s", "--task", tid, "--role", "implementer", "--vendor", "codex", "--round", "1"])
     _run(tmp_path, ["agent", "start", "--session", "s", "--task", tid, "--role", "implementer", "--vendor", "claude", "--round", "1"])
     aid = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("agent ")][-1].split()[1]
     _run(tmp_path, ["agent", "finish", "--id", aid, "--verdict", "done"])
@@ -417,8 +420,9 @@ def test_cli_next_prints_configured_vendor(
     capsys.readouterr()
     _run(tmp_path, ["next", "--task", tid])
     out = capsys.readouterr().out
-    assert "vendor=claude|codex" in out
-    assert "who=claude|codex implementer" in out
+    assert "vendor=claude" in out
+    assert "vendor=claude|codex" not in out
+    assert "who=claude implementer" in out
 
 
 @pytest.mark.no_pg

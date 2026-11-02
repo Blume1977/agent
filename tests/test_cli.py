@@ -936,7 +936,7 @@ def test_reviewer_start_before_implementer_done_dies(
         )
 
 
-def test_implementer_start_accepts_codex(
+def test_implementer_start_requires_the_first_slot(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     run(tmp_path, ["init"])
@@ -961,6 +961,25 @@ def test_implementer_start_accepts_codex(
     tid = _last_task_id(capsys.readouterr().out)
     run(tmp_path, ["round", "start", "--task", tid])
     capsys.readouterr()
+    # The coordinator binds an implementer lane only for slot first.
+    with pytest.raises(SystemExit, match=r"implementer requires --vendor grok \(configured model slot first\)"):
+        run(
+            tmp_path,
+            [
+                "agent",
+                "start",
+                "--session",
+                "s",
+                "--task",
+                tid,
+                "--role",
+                "implementer",
+                "--vendor",
+                "codex",
+                "--round",
+                "1",
+            ],
+        )
     run(
         tmp_path,
         [
@@ -973,7 +992,7 @@ def test_implementer_start_accepts_codex(
             "--role",
             "implementer",
             "--vendor",
-            "codex",
+            "grok",
             "--round",
             "1",
         ],
@@ -983,7 +1002,7 @@ def test_implementer_start_accepts_codex(
     try:
         rows = [a for a in store.rows("agent") if a.get("id") == aid]
         assert len(rows) == 1
-        assert rows[0]["vendor"] == "codex"
+        assert rows[0]["vendor"] == "grok"
     finally:
         store.close()
 
@@ -2765,7 +2784,7 @@ def test_allow_next_close_step(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert "spec_written" in dry
 
 
-def test_next_unpinned_implementer_prints_either_vendor(
+def test_next_implementer_prints_the_first_slot_vendor(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     run(tmp_path, ["init"])
@@ -2820,7 +2839,8 @@ def test_next_unpinned_implementer_prints_either_vendor(
     run(tmp_path, ["next", "--task", tid])
     out = capsys.readouterr().out
     assert "implementer_done" in out
-    assert "vendor=grok|codex" in out
+    assert "vendor=grok" in out
+    assert "vendor=grok|codex" not in out
     assert "vendor=None" not in out
 
 
@@ -3903,7 +3923,7 @@ def test_late_inner_close_from_implementing_without_agent_dies(
         )
 
 
-def test_codex_implementer_closes_implementer_done(
+def test_first_slot_implementer_closes_implementer_done(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     tid = _spine_session_task(tmp_path, capsys)
@@ -3949,7 +3969,7 @@ def test_codex_implementer_closes_implementer_done(
             "--role",
             "implementer",
             "--vendor",
-            "codex",
+            "grok",
             "--round",
             "1",
         ],
@@ -3968,13 +3988,13 @@ def test_codex_implementer_closes_implementer_done(
             "--source",
             "script",
             "--evidence",
-            "codex implementer finished",
+            "grok implementer finished",
         ],
     )
     assert "checklist implementer_done=ja" in capsys.readouterr().out
 
 
-def test_codex_implementer_closes_conflicts_resolved(
+def test_first_slot_implementer_closes_conflicts_resolved(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     tid = _spine_session_task(tmp_path, capsys, workflow="resolve-conflicts")
@@ -4006,7 +4026,7 @@ def test_codex_implementer_closes_conflicts_resolved(
             "--role",
             "implementer",
             "--vendor",
-            "codex",
+            "grok",
             "--round",
             "1",
         ],
@@ -4025,7 +4045,7 @@ def test_codex_implementer_closes_conflicts_resolved(
             "--source",
             "script",
             "--evidence",
-            "codex implementer finished",
+            "grok implementer finished",
         ],
     )
     assert "checklist conflicts_resolved=ja" in capsys.readouterr().out

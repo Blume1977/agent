@@ -935,11 +935,8 @@ def cmd_agent(args: list[str]) -> None:
             models = models_from_snapshot(store.row("task", tid))
             if role == "reviewer" and vendor != models.first:
                 die(f"reviewer requires --vendor {models.first} (configured model slot first)")
-            if role == "implementer" and models.slot_of(vendor) is None:
-                die(
-                    f"implementer requires --vendor {models.first}|{models.second} "
-                    "(configured model slots)"
-                )
+            if role == "implementer" and vendor != models.first:
+                die(f"implementer requires --vendor {models.first} (configured model slot first)")
             if round_raw is not None and round_raw != "":
                 if not round_raw.isdigit():
                     die("--round must be an integer")

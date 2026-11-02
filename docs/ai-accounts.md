@@ -98,8 +98,8 @@ A task pins the device's `models` when it is created (`task create`, the issue
 coordinator, error-fix tasks). Every later check for that task (`agent agent start` for `reviewer` and
 `implementer`,
 `gate record`, `allow`, `next`, `run`, the coordinator gates) uses the pinned
-value, so changing `models` affects new CLI and error-fix tasks only. The issue
-coordinator also hashes the device's non-default `models` into each accepted
+value, so changing `models` affects only tasks created afterwards, whether by the
+CLI, the issue coordinator or error-fix. The issue coordinator also hashes the device's non-default `models` into each accepted
 task's execution binding: after a change, tasks it already accepted stop with
 "task execution configuration changed" until the configuration is restored. For the PR reviewer roles,
 `agent agent start` accepts any supported provider and `gate record` enforces the
@@ -118,8 +118,8 @@ accepted: the operator configured them on this device, and the lane model has no
 
 `agent agent start --role reviewer --vendor X` requires `X` to be `models.first`
 pinned on the task;
-`--role implementer` accepts the provider of either slot (the chain leaves the
-implementer unpinned, the coordinator uses `models.first`); `agent gate record
+`--role implementer` requires the provider of slot `first`, like the coordinator
+and the chain, which pin the implementer to `models.first`; `agent gate record
 --stage S --vendor X` requires `X` to be the provider of the slot `S` stands for.
 
 ## Required fields
