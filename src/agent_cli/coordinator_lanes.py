@@ -17,6 +17,7 @@ from .coordinator_common import (
     CoordinatorError,
     LaneRunner,
     Runner,
+    checklist_key_for_stage,
     control_dir,
     coord,
     harden_grok_write_argv,
@@ -31,7 +32,6 @@ from .coordinator_common import (
 from .coordinator_config import WorkerConfig
 from .coordinator_exec import run_bounded
 from .coordinator_git import execute_github, queue_activity, verify_signed_clean_head, verify_checkout_identity
-from .coordinator_common import checklist_key_for_stage
 from .lane import OUTPUT_FILE_VENDORS, SPEC_VIA_STDIN, LaneResult, provider_argv
 from .model_slots import SLOT_STAGES, ModelSlots, ModelSlotsError, models_from_snapshot
 from .store import Store, utcnow

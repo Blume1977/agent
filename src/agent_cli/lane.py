@@ -22,9 +22,10 @@ SPEC_VIA_STDIN = frozenset({"codex", "claude"})
 # Providers whose final message is collected from an output file.
 OUTPUT_FILE_VENDORS = frozenset({"codex"})
 NPROC_CAP = 800
-# Stripped from every lane: a lane runs on its own provider login, never on the
-# orchestrator's ambient API key or Claude Code session markers.
-GROK_STRIP_ENV = (
+# Stripped from every lane and every lane pane: a lane runs on its own provider
+# login, never on the orchestrator's ambient Claude credentials or Claude Code
+# session markers.
+LANE_STRIP_ENV = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -61,7 +62,7 @@ Runner = Callable[[list[str], str | None], object]
 
 def _env_strip_prefix() -> list[str]:
     argv = ["env"]
-    for key in GROK_STRIP_ENV:
+    for key in LANE_STRIP_ENV:
         argv.extend(["-u", key])
     return argv
 
@@ -147,6 +148,9 @@ def claude_argv(*, cwd: str, write: bool, model: str) -> list[str]:
             cwd,
             # Only the user's own settings: a worktree's .claude/settings.json
             # (hooks run shell commands) and .mcp.json must not reach a lane.
+            # Hooks from the user's own settings still run in the lane process;
+            # that is accepted: the operator configured them on this device, and
+            # the model itself still cannot reach Bash.
             "--setting-sources",
             "user",
             "--strict-mcp-config",

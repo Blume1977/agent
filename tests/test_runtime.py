@@ -169,16 +169,20 @@ def test_grok_tmux_argv_unsets_claude_env() -> None:
         model="operator-selected-model",
         new_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
     )
-    assert argv[:7] == [
+    assert argv[:11] == [
         "env",
         "-u",
         "ANTHROPIC_API_KEY",
+        "-u",
+        "ANTHROPIC_AUTH_TOKEN",
+        "-u",
+        "CLAUDE_CODE_OAUTH_TOKEN",
         "-u",
         "CLAUDECODE",
         "-u",
         "CLAUDE_CODE_ENTRYPOINT",
     ]
-    assert argv[7:] == [
+    assert argv[11:] == [
         "grok",
         "--always-approve",
         "--session-id",

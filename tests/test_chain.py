@@ -7,7 +7,10 @@ import unittest
 from agent_cli.allow import CHECKLIST_KEYS
 from agent_cli.chain import (
     CHAINS,
+    Step,
+    _artifact_ok,
     _satisfied,
+    _unavailable_gate_ok,
     close_allowed,
     handoff_prompt,
     next_steps,
@@ -651,6 +654,16 @@ class TestCloseAllowed(unittest.TestCase):
         )
         self.assertFalse(denied.allowed)
         self.assertIn("not the next step", denied.reason)
+
+
+
+class TestPrReviewerWithoutSlot(unittest.TestCase):
+    def test_pr_reviewer_step_without_slot_reports_instead_of_raising(self) -> None:
+        step = Step(key="future_pr_logic", needs=(), kind="agent", role="pr-reviewer-logic")
+        self.assertEqual(_artifact_ok(step, {"gates": []}), "future_pr_logic has no model slot")
+        self.assertEqual(
+            _unavailable_gate_ok(step, {"gates": []}), "future_pr_logic has no model slot"
+        )
 
 
 if __name__ == "__main__":

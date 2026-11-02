@@ -112,6 +112,9 @@ cannot be kept from running commands. `agent lane run` and `agent run` accept it
 
 The `claude` adapter runs with `--setting-sources user` and `--strict-mcp-config`,
 so a worktree's `.claude/settings.json` hooks and `.mcp.json` never reach a lane.
+Hooks in the operator's own user settings still run in the lane process. That is
+accepted: the operator configured them on this device, and the lane model has no
+`Bash`.
 
 `agent agent start --role reviewer --vendor X` requires `X` to be `models.first`
 pinned on the task;

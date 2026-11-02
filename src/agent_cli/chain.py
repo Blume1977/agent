@@ -370,7 +370,9 @@ def _unavailable_gate_ok(step: Step, snapshot: dict[str, Any]) -> str:
     if step.role not in ("pr-reviewer-quality", "pr-reviewer-logic"):
         return f"unavailable is not allowed for {step.key}"
     dim = "quality" if step.role.endswith("quality") else "logic"
-    stage = SLOT_STAGES[str(step.slot)]
+    stage = SLOT_STAGES.get(str(step.slot))
+    if stage is None:
+        return f"{step.key} has no model slot"
     g = _latest_gate(snapshot, stage, dim)
     if not g or g.get("verdict") != "unavailable":
         return f"gate {stage}/{dim} is not unavailable"
@@ -429,7 +431,9 @@ def _artifact_ok(step: Step, snapshot: dict[str, Any]) -> str:
         return ""
     if step.role in ("pr-reviewer-quality", "pr-reviewer-logic"):
         dim = "quality" if step.role.endswith("quality") else "logic"
-        stage = SLOT_STAGES[str(step.slot)]
+        stage = SLOT_STAGES.get(str(step.slot))
+        if stage is None:
+            return f"{step.key} has no model slot"
         g = _latest_gate(snapshot, stage, dim)
         if not g or g.get("verdict") != "approved":
             return f"gate {stage}/{dim} is not approved"

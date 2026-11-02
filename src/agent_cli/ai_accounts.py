@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .lane import LANE_STRIP_ENV
 from .model_slots import (
     DEFAULT_MODEL_SLOTS,
     SUPPORTED_PROVIDERS,
@@ -40,11 +41,7 @@ _CLEAR_ENV = (
     "GROK_API_KEY",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDECODE",
-    "CLAUDE_CODE_ENTRYPOINT",
+    *LANE_STRIP_ENV,
     "GROK_HOME",
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",

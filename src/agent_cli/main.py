@@ -52,7 +52,7 @@ from .knock import drain as knock_drain
 from .knock import listen_once as knock_listen
 from .lane import LANE_ROLES, LANE_VENDORS, LaneResult, launch
 from .local_ci import LocalCiError, parse_comment, parse_payload, render_block, verify_comment
-from .model_slots import PROVIDER_CHOICES, STAGE_CHOICES, ModelSlots, ModelSlotsError, models_from_snapshot
+from .model_slots import DEFAULT_MODEL_SLOTS, PROVIDER_CHOICES, STAGE_CHOICES, ModelSlots, ModelSlotsError, models_from_snapshot
 from .pg import PgError, cluster_exists, cluster_running, ensure_cluster, require_loopback_dsn, stop_cluster
 from .pr_guard_config import PrGuardLookupError, fetch_trusted_pr_guard, one_review_for
 from .runtime import (
@@ -2431,7 +2431,7 @@ def _chain_snapshot(store: Store, tid: str, extra_head: str | None = None) -> di
     return {
         "session_active": bool(session is not None and session.get("status") == "active"),
         "agents": agents,
-        "models": task.get("models") or models_from_snapshot(None).as_dict(),
+        "models": task.get("models") or DEFAULT_MODEL_SLOTS.as_dict(),
         "gates": task.get("gates") or [],
         "local_checks": task.get("local_checks") or [],
         "head_sha": head,
