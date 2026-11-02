@@ -208,8 +208,9 @@ def test_claude_argv_read_only_and_write_shapes() -> None:
 
     rw = claude_argv(cwd="/work", write=True, model=CLAUDE_MODEL)
     assert rw[rw.index("--permission-mode") + 1] == "acceptEdits"
+    # No bare edit rule: it would allow edits outside the working directory.
     allowed = rw[rw.index("--allowedTools") + 1 : rw.index("--disallowedTools")]
-    assert {"Edit", "Write", "Read"} <= set(allowed)
+    assert set(allowed) == {"Read", "Grep", "Glob"}
     disallowed = rw[rw.index("--disallowedTools") + 1 :]
     assert "Bash" in disallowed and "Agent" in disallowed
     assert "Edit" not in disallowed

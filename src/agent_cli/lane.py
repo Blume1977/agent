@@ -23,12 +23,17 @@ SPEC_VIA_STDIN = frozenset({"codex", "claude"})
 OUTPUT_FILE_VENDORS = frozenset({"codex"})
 NPROC_CAP = 800
 # Stripped from every lane and every lane pane: a lane runs on its own provider
-# login, never on the orchestrator's ambient Claude credentials or Claude Code
-# session markers.
+# login, never on the orchestrator's ambient Claude credentials, its API route
+# (gateway, Bedrock, Vertex) or Claude Code session markers.
 LANE_STRIP_ENV = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "AWS_BEARER_TOKEN_BEDROCK",
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
 )
@@ -157,8 +162,12 @@ def claude_argv(*, cwd: str, write: bool, model: str) -> list[str]:
         ]
     )
     if write:
+        # The edit tools stay out of --allowedTools: a bare rule there matches
+        # every path. acceptEdits approves edits only inside the working
+        # directory and --add-dir; anything else would need a prompt, which
+        # --print denies.
         argv.extend(["--permission-mode", "acceptEdits"])
-        argv.extend(["--allowedTools", *_CLAUDE_READ_TOOLS, *_CLAUDE_WRITE_TOOLS])
+        argv.extend(["--allowedTools", *_CLAUDE_READ_TOOLS])
         argv.extend(["--disallowedTools", *_CLAUDE_FORBIDDEN_TOOLS])
     else:
         # Explicit mode: a user-level permissions.defaultMode (e.g. bypassPermissions)
