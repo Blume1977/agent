@@ -414,13 +414,17 @@ def _artifact_ok(step: Step, snapshot: dict[str, Any]) -> str:
             return "session is not active"
         return ""
     if step.role == "implementer":
-        # Closing accepts a row of either slot's provider: a task started before
-        # the implementer was bound to slot first may hold a second-slot row.
-        # Starting one (`agent agent start`) requires slot first.
+        # A pinned task closes only with its slot-first provider, like the start
+        # check. A task created before model slots carries no pin and may hold a
+        # codex implementer row; it closes with a row of either slot's provider.
         models = models_from_snapshot(snapshot)
+        pinned = snapshot.get("models_pinned", True)
         ag = None
         for a in snapshot.get("agents") or []:
-            if a.get("role") == "implementer" and models.slot_of(str(a.get("vendor") or "")):
+            vendor = str(a.get("vendor") or "")
+            if a.get("role") != "implementer":
+                continue
+            if vendor == models.first or (not pinned and models.slot_of(vendor)):
                 ag = a
         if not ag or ag.get("status") != "done":
             return "no finished implementer agent"

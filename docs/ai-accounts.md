@@ -119,7 +119,9 @@ accepted: the operator configured them on this device, and the lane model has no
 `agent agent start --role reviewer --vendor X` requires `X` to be `models.first`
 pinned on the task;
 `--role implementer` requires the provider of slot `first`, like the coordinator
-and the chain, which pin the implementer to `models.first`; `agent gate record
+and the chain, which pin the implementer to `models.first` (closing
+`implementer_done` or `conflicts_resolved` of a task created before model slots,
+which carries no pin, also accepts a finished row of the second provider); `agent gate record
 --stage S --vendor X` requires `X` to be the provider of the slot `S` stands for.
 
 ## Required fields

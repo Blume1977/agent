@@ -2429,6 +2429,7 @@ def _chain_snapshot(store: Store, tid: str, extra_head: str | None = None) -> di
         "session_active": bool(session is not None and session.get("status") == "active"),
         "agents": agents,
         "models": task.get("models") or DEFAULT_MODEL_SLOTS.as_dict(),
+        "models_pinned": (store.row("task", tid) or {}).get("models") is not None,
         "gates": task.get("gates") or [],
         "local_checks": task.get("local_checks") or [],
         "head_sha": head,

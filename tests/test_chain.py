@@ -658,11 +658,12 @@ class TestCloseAllowed(unittest.TestCase):
 
 
 class TestImplementerRowFromBeforeTheSlotBinding(unittest.TestCase):
-    def test_a_second_slot_implementer_row_still_closes_the_step(self) -> None:
+    def test_an_unpinned_task_closes_with_a_second_slot_row(self) -> None:
         impl = next(s for s in steps_for("implement") if s.key == "implementer_done")
         snapshot = {
             "agents": [{"role": "implementer", "vendor": "codex", "status": "done"}],
             "implementer_verdict": "done",
+            "models_pinned": False,
         }
         self.assertEqual(_artifact_ok(impl, snapshot), "")
         conflicts = next(
@@ -670,11 +671,27 @@ class TestImplementerRowFromBeforeTheSlotBinding(unittest.TestCase):
         )
         self.assertEqual(_artifact_ok(conflicts, snapshot), "")
 
-    def test_a_row_outside_the_pinned_slots_does_not_close_the_step(self) -> None:
+    def test_a_pinned_task_needs_the_slot_first_row(self) -> None:
+        impl = next(s for s in steps_for("implement") if s.key == "implementer_done")
+        snapshot = {
+            "agents": [
+                {"role": "implementer", "vendor": "grok", "status": "working"},
+                {"role": "implementer", "vendor": "codex", "status": "done"},
+            ],
+            "implementer_verdict": "done",
+            "models": {"first": "grok", "second": "codex"},
+            "models_pinned": True,
+        }
+        self.assertEqual(_artifact_ok(impl, snapshot), "no finished implementer agent")
+        snapshot["agents"].append({"role": "implementer", "vendor": "grok", "status": "done"})
+        self.assertEqual(_artifact_ok(impl, snapshot), "")
+
+    def test_a_row_outside_the_slots_does_not_close_the_step(self) -> None:
         impl = next(s for s in steps_for("implement") if s.key == "implementer_done")
         snapshot = {
             "agents": [{"role": "implementer", "vendor": "claude", "status": "done"}],
             "implementer_verdict": "done",
+            "models_pinned": False,
         }
         self.assertEqual(_artifact_ok(impl, snapshot), "no finished implementer agent")
 

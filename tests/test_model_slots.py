@@ -459,6 +459,12 @@ def test_coordinator_snapshots_carry_the_configured_models(tmp_path: Path, capsy
         assert task is not None
         snap = checklist_snapshot(store, dict(task))
         assert snap["models"] == {"first": "claude", "second": "codex"}
+        assert snap["models_pinned"] is True
+        # The chain takes the last matching row, so agents come oldest first.
+        for aid, started, status in (("a-old", "2026-01-01T00:00:00Z", "working"), ("a-new", "2026-01-02T00:00:00Z", "done")):
+            store.write("agent", "insert", aid, {"id": aid, "task_id": tid, "role": "implementer", "vendor": "claude", "status": status, "started_at": started})
+        snap = checklist_snapshot(store, dict(task))
+        assert [a["status"] for a in snap["agents"] if a["role"] == "implementer"] == ["working", "done"]
         task_snap = _task_snapshot(store, tid)
         assert task_snap["models"] == {"first": "claude", "second": "codex"}
     finally:

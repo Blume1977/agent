@@ -348,14 +348,16 @@ def checklist_snapshot(store: Store, task: dict[str, Any]) -> dict[str, Any]:
         for r in store.rows("checklist_item")
         if r.get("task_id") == tid
     }
+    # Oldest first, like the CLI snapshot: the chain takes the last matching row.
+    agents_raw = [a for a in store.rows("agent") if a.get("task_id") == tid]
+    agents_raw.sort(key=lambda a: (a.get("started_at") or "", str(a.get("id") or "")))
     agents = [
         {
             "role": a.get("role"),
             "vendor": a.get("vendor"),
             "status": a.get("status"),
         }
-        for a in store.rows("agent")
-        if a.get("task_id") == tid
+        for a in agents_raw
     ]
     checks = [c for c in store.rows("local_check") if c.get("task_id") == tid]
     checks.sort(key=lambda c: str(c.get("ran_at") or ""))
@@ -399,6 +401,7 @@ def checklist_snapshot(store: Store, task: dict[str, Any]) -> dict[str, Any]:
         "agents": agents,
         "gates": gates,
         "models": _task_models(task).as_dict(),
+        "models_pinned": task.get("models") is not None,
         "local_checks": local_checks,
         "implementer_verdict": implementer_verdict,
         "reviewer_verdict": reviewer_verdict,
