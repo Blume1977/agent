@@ -4051,6 +4051,58 @@ def test_first_slot_implementer_closes_conflicts_resolved(
     assert "checklist conflicts_resolved=ja" in capsys.readouterr().out
 
 
+
+def _codex_implementer_done(tmp_path: Path, capsys: pytest.CaptureFixture[str], *, unpin: bool) -> str:
+    """Task whose only finished implementer row is codex, as develop could record it."""
+    tid = _spine_session_task(tmp_path, capsys)
+    for key, source, evidence in (
+        ("session_registered", "script", "session register"),
+        ("spec_written", "human", "five-part spec"),
+    ):
+        run(tmp_path, ["close-step", "--task", tid, "--key", key, "--source", source, "--evidence", evidence])
+    run(tmp_path, ["round", "start", "--task", tid])
+    capsys.readouterr()
+    run(
+        tmp_path,
+        ["agent", "start", "--session", "s", "--task", tid, "--role", "implementer", "--vendor", "grok", "--round", "1"],
+    )
+    impl_id = _last_agent_id(capsys.readouterr().out)
+    store = Store(tmp_path)
+    try:
+        agent = {k: v for k, v in (store.row("agent", impl_id) or {}).items() if not k.startswith("_")}
+        store.write("agent", "update", impl_id, {**agent, "vendor": "codex"})
+        if unpin:
+            task = {k: v for k, v in (store.row("task", tid) or {}).items() if not k.startswith("_")}
+            task.pop("models", None)
+            store.write("task", "update", tid, task)
+    finally:
+        store.close()
+    run(tmp_path, ["agent", "finish", "--id", impl_id, "--verdict", "done"])
+    capsys.readouterr()
+    return tid
+
+
+def test_pinned_task_does_not_close_implementer_done_with_a_codex_row(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    tid = _codex_implementer_done(tmp_path, capsys, unpin=False)
+    with pytest.raises(SystemExit, match="no finished implementer agent"):
+        run(
+            tmp_path,
+            ["close-step", "--task", tid, "--key", "implementer_done", "--source", "script", "--evidence", "codex row"],
+        )
+
+
+def test_task_without_models_pin_closes_implementer_done_with_a_codex_row(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    tid = _codex_implementer_done(tmp_path, capsys, unpin=True)
+    run(
+        tmp_path,
+        ["close-step", "--task", tid, "--key", "implementer_done", "--source", "script", "--evidence", "codex row"],
+    )
+    assert "checklist implementer_done=ja" in capsys.readouterr().out
+
 def test_implementer_done_n_a_still_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
